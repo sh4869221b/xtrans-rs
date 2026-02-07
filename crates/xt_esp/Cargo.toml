@@ -2,6 +2,7 @@
 name = "xt_esp"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 flate2 = "1.0"

@@ -2,6 +2,7 @@
 name = "xt_core"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 xt_esp = { path = "../xt_esp" }

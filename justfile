@@ -35,6 +35,9 @@ test-core:
 test-esp:
 	cargo test -p xt_esp
 
+license-report:
+	cargo license --json
+
 fmt:
 	cargo fmt
 

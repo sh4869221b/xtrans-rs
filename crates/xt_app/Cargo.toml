@@ -2,6 +2,7 @@
 name = "xt_app"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 dioxus = { version = "0.7.1", features = ["router", "fullstack"] }

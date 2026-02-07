@@ -1,3 +1,27 @@
+# xtrans-rs
+
+## Purpose
+
+This project aims to re-implement the xTranslator workflow in Rust with a Dioxus desktop UI.
+The target is workflow compatibility, not a byte-for-byte clone of the original application.
+
+## Current Scope
+
+The current implementation intentionally focuses on the following workflows only:
+
+1. Dictionary-based auto translation (build/apply dictionary)
+2. XML-based bulk translation import/apply (including xTranslator XML compatibility)
+
+Everything outside these workflows is partial, experimental, or not implemented yet.
+
+## Legal and Attribution
+
+- This project is an independent implementation and is not affiliated with xTranslator or its maintainers.
+- Development follows a clean-room approach focused on workflow compatibility.
+- The upstream xTranslator project is licensed under MPL-2.0: <https://github.com/MGuffin/xTranslator/blob/main/LICENSE>
+- This repository is licensed under MIT (`LICENSE`).
+- Third-party crate licenses are tracked in `THIRD_PARTY_NOTICES.md`.
+
 # Development
 
 This workspace is split into a core library and a Dioxus desktop app.
