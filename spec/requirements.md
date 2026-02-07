@@ -36,9 +36,12 @@
 - **FR-ENC-01（v1）** エンコーディング破損防止
 
 ### E) 入出力・共有
-- **FR-XML-01（v1）** XML import/export
+- **FR-XML-01（v1）** xtrans-rs独自XMLの import/export
 - **FR-XML-02（MVP）** 翻訳XMLの一括適用（default profile）
 - **FR-XML-03（v1）** XMLドラッグ&ドロップ適用
+- **FR-XML-04（MVP）** xTranslator XML（`SSTXMLRessources`）をimport可能
+- **FR-XML-05（MVP）** XML一括適用は `key一致` を優先し、`key不一致` 時は `source一致（一意のみ）` をフォールバック適用
+- **FR-XML-06（MVP）** `source一致` が複数訳で競合する場合は未適用（missing）として扱う
 - **FR-UNDO-01（v1）** Undo/Redo（単一/バッチ/インポート）
 - **FR-SAVE-01（MVP）** Strings形式への保存（元拡張子を保持）
 - **FR-SAVE-02（v1）** Plugin形式への保存（ESP/ESM/ESL）

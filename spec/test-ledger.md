@@ -25,6 +25,9 @@
 - [x] **T-VAL-ALIAS-001**: Aliasタグ整合チェック（FR-VAL-02）
 - [x] **T-ENC-001**: 代表エンコーディングのround-trip（FR-ENC-01）
 - [x] **T-XML-APPLY-001**: XML default profile適用で updated/unchanged/missing が正しい（FR-XML-02）
+- [x] **T-XML-IMPORT-002**: xTranslator XML（`SSTXMLRessources`）をimportして `Source/Dest` を抽出できる（FR-XML-04）
+- [x] **T-XML-APPLY-002**: key不一致でも source一致（一意）で訳文適用できる（FR-XML-05）
+- [x] **T-XML-APPLY-003**: source一致が競合する場合は未適用（missing）になる（FR-XML-06）
 - [x] **T-DICT-001**: 辞書Quick AutoTranslateは選択範囲のみ更新できる（FR-AUTO-03）
 - [x] **T-DICT-002**: Stringsディレクトリから辞書構築できる（FR-DICT-02）
 - [x] **T-BATCH-001**: `--load --importxml --finalize` 引数の解析が成立する（FR-BATCH-01）

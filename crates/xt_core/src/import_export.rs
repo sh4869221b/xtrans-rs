@@ -39,6 +39,14 @@ pub fn export_entries(entries: &[Entry]) -> String {
 }
 
 pub fn import_entries(xml: &str) -> Result<Vec<Entry>, XmlError> {
+    let xml = strip_bom(xml);
+    if xml.contains("<SSTXMLRessources") {
+        return import_entries_xtranslator(xml);
+    }
+    import_entries_xtrans(xml)
+}
+
+fn import_entries_xtrans(xml: &str) -> Result<Vec<Entry>, XmlError> {
     let mut entries = Vec::new();
     let mut rest = xml;
     while let Some(start) = rest.find("<entry") {
@@ -58,11 +66,65 @@ pub fn import_entries(xml: &str) -> Result<Vec<Entry>, XmlError> {
     Ok(entries)
 }
 
+fn import_entries_xtranslator(xml: &str) -> Result<Vec<Entry>, XmlError> {
+    let mut entries = Vec::new();
+    let mut rest = xml;
+    let mut index = 0usize;
+
+    while let Some(start) = find_string_tag(rest) {
+        let block = &rest[start..];
+        let open_end = block.find('>').ok_or(XmlError::InvalidFormat)?;
+        let open_tag = &block[..=open_end];
+        let body_with_tail = &block[open_end + 1..];
+        let close = body_with_tail
+            .find("</String>")
+            .ok_or(XmlError::InvalidFormat)?;
+        let body = &body_with_tail[..close];
+
+        let source_text = parse_element_text(body, "Source")?;
+        let target_text = parse_element_text(body, "Dest")?;
+
+        // xTranslator XML has no stable key for our internal entries.
+        // We keep a synthetic key and rely on source-text fallback matching.
+        let list = parse_attr(open_tag, "List").ok();
+        let sid = parse_attr(open_tag, "sID").ok();
+        let key = format!(
+            "xtr:{}:{}:{}",
+            list.unwrap_or_else(|| "0".to_string()),
+            sid.unwrap_or_else(|| "-".to_string()),
+            index
+        );
+
+        entries.push(Entry {
+            key,
+            source_text,
+            target_text,
+        });
+        index = index.saturating_add(1);
+        rest = &body_with_tail[close + "</String>".len()..];
+    }
+
+    if entries.is_empty() {
+        return Err(XmlError::InvalidFormat);
+    }
+    Ok(entries)
+}
+
 pub fn apply_xml_default(current: &[Entry], imported: &[Entry]) -> (Vec<Entry>, XmlApplyStats) {
     let mut import_map: HashMap<&str, &str> = HashMap::new();
+    let mut source_map: HashMap<&str, Option<&str>> = HashMap::new();
     for entry in imported {
         if !entry.target_text.is_empty() {
             import_map.insert(entry.key.as_str(), entry.target_text.as_str());
+            match source_map.get(entry.source_text.as_str()) {
+                None => {
+                    source_map.insert(entry.source_text.as_str(), Some(entry.target_text.as_str()));
+                }
+                Some(Some(prev)) if *prev != entry.target_text.as_str() => {
+                    source_map.insert(entry.source_text.as_str(), None);
+                }
+                _ => {}
+            }
         }
     }
     let mut stats = XmlApplyStats::default();
@@ -70,10 +132,14 @@ pub fn apply_xml_default(current: &[Entry], imported: &[Entry]) -> (Vec<Entry>, 
         .iter()
         .map(|entry| {
             let mut next = entry.clone();
-            match import_map.get(entry.key.as_str()) {
+            let key_target = import_map.get(entry.key.as_str()).copied();
+            let source_target = source_map
+                .get(entry.source_text.as_str())
+                .and_then(|v| v.as_ref().copied());
+            match key_target.or(source_target) {
                 Some(target) => {
-                    if next.target_text != *target {
-                        next.target_text = (*target).to_string();
+                    if next.target_text != target {
+                        next.target_text = target.to_string();
                         stats.updated += 1;
                     } else {
                         stats.unchanged += 1;
@@ -93,6 +159,51 @@ fn parse_attr(tag: &str, name: &'static str) -> Result<String, XmlError> {
     let after = &tag[start + needle.len()..];
     let end = after.find('"').ok_or(XmlError::InvalidFormat)?;
     unescape_xml(&after[..end])
+}
+
+fn parse_element_text(input: &str, name: &'static str) -> Result<String, XmlError> {
+    let mut from = 0usize;
+    while let Some(rel_start) = input[from..].find(&format!("<{name}")) {
+        let start = from + rel_start;
+        let tail = &input[start + name.len() + 1..];
+        let Some(next) = tail.as_bytes().first().copied() else {
+            return Err(XmlError::InvalidFormat);
+        };
+        if !matches!(next, b'>' | b' ' | b'\t' | b'\r' | b'\n') {
+            from = start + 1;
+            continue;
+        }
+        let open_end = input[start..]
+            .find('>')
+            .ok_or(XmlError::InvalidFormat)?
+            + start;
+        let close_tag = format!("</{name}>");
+        let close_start = input[open_end + 1..]
+            .find(&close_tag)
+            .ok_or(XmlError::InvalidFormat)?
+            + open_end
+            + 1;
+        return unescape_xml(&input[open_end + 1..close_start]);
+    }
+    Err(XmlError::InvalidFormat)
+}
+
+fn find_string_tag(input: &str) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(rel_start) = input[from..].find("<String") {
+        let start = from + rel_start;
+        let tail = &input[start + "<String".len()..];
+        let next = tail.as_bytes().first().copied();
+        if matches!(next, Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n')) {
+            return Some(start);
+        }
+        from = start + 1;
+    }
+    None
+}
+
+fn strip_bom(input: &str) -> &str {
+    input.strip_prefix('\u{feff}').unwrap_or(input)
 }
 
 fn escape_xml(input: &str) -> String {
@@ -206,5 +317,101 @@ mod tests {
         assert_eq!(stats.unchanged, 1);
         assert_eq!(stats.missing, 1);
         assert_eq!(merged[0].target_text, "AA");
+    }
+
+    #[test]
+    fn t_xml_import_002_accept_xtranslator_schema() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<SSTXMLRessources>
+  <Params>
+    <Addon>isilNarsil</Addon>
+    <Source>english</Source>
+    <Dest>japanese</Dest>
+    <Version>2</Version>
+  </Params>
+  <Content>
+    <String List="0" sID="000001">
+      <EDID>IronSword</EDID>
+      <REC id="0" idMax="1">WEAP:FULL</REC>
+      <Source>Iron Sword</Source>
+      <Dest>鉄の剣</Dest>
+    </String>
+    <String List="0" sID="000002">
+      <Source>Steel Sword</Source>
+      <Dest>鋼鉄の剣</Dest>
+    </String>
+  </Content>
+</SSTXMLRessources>"#;
+
+        let parsed = import_entries(xml).expect("import xtranslator xml");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].source_text, "Iron Sword");
+        assert_eq!(parsed[0].target_text, "鉄の剣");
+        assert_eq!(parsed[1].source_text, "Steel Sword");
+        assert_eq!(parsed[1].target_text, "鋼鉄の剣");
+    }
+
+    #[test]
+    fn t_xml_apply_002_source_fallback_for_xtranslator() {
+        let current = vec![
+            Entry {
+                key: "WEAP:00012EB7:FULL:0".to_string(),
+                source_text: "Iron Sword".to_string(),
+                target_text: String::new(),
+            },
+            Entry {
+                key: "WEAP:00013989:FULL:0".to_string(),
+                source_text: "Steel Sword".to_string(),
+                target_text: String::new(),
+            },
+        ];
+
+        // imported keys intentionally do not match current keys.
+        let imported = vec![
+            Entry {
+                key: "xtr:0:000001:0".to_string(),
+                source_text: "Iron Sword".to_string(),
+                target_text: "鉄の剣".to_string(),
+            },
+            Entry {
+                key: "xtr:0:000002:1".to_string(),
+                source_text: "Steel Sword".to_string(),
+                target_text: "鋼鉄の剣".to_string(),
+            },
+        ];
+
+        let (merged, stats) = apply_xml_default(&current, &imported);
+        assert_eq!(stats.updated, 2);
+        assert_eq!(stats.unchanged, 0);
+        assert_eq!(stats.missing, 0);
+        assert_eq!(merged[0].target_text, "鉄の剣");
+        assert_eq!(merged[1].target_text, "鋼鉄の剣");
+    }
+
+    #[test]
+    fn t_xml_apply_003_source_fallback_skips_ambiguous_targets() {
+        let current = vec![Entry {
+            key: "k1".to_string(),
+            source_text: "Moonforge".to_string(),
+            target_text: String::new(),
+        }];
+        let imported = vec![
+            Entry {
+                key: "xtr:a".to_string(),
+                source_text: "Moonforge".to_string(),
+                target_text: "ムーンフォージ".to_string(),
+            },
+            Entry {
+                key: "xtr:b".to_string(),
+                source_text: "Moonforge".to_string(),
+                target_text: "月鍛冶".to_string(),
+            },
+        ];
+
+        let (merged, stats) = apply_xml_default(&current, &imported);
+        assert_eq!(stats.updated, 0);
+        assert_eq!(stats.unchanged, 0);
+        assert_eq!(stats.missing, 1);
+        assert_eq!(merged[0].target_text, "");
     }
 }

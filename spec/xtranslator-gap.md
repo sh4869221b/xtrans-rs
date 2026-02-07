@@ -45,12 +45,16 @@
 ### 実装済み/部分一致
 - XML import/exportの概念は存在（`spec/requirements.md` の `FR-XML-01`）。
 - Strings/Pluginを読み込んで編集する基本経路は存在。
+- xTranslator XML（`SSTXMLRessources`）の `Source/Dest` 取り込みを実装済み（`FR-XML-04`）。
+- XML一括適用で `key一致優先 + source一致（一意）フォールバック` を実装済み（`FR-XML-05`）。
+- `source一致` が競合する場合の安全側スキップ（missing）を実装済み（`FR-XML-06`）。
+- 対応テストを `xt_core` に実装済み（`T-XML-IMPORT-002`, `T-XML-APPLY-002`, `T-XML-APPLY-003`）。
 
 ### 未充足（優先度高）
 - 辞書構築UIと辞書状態管理が未定義に近い（構築対象、更新時刻、再構築導線）。
-- Quick AutoTranslate（選択対象を辞書で即時反映）の操作仕様が未定義。
+- Quick AutoTranslate（選択対象を辞書で即時反映）のショートカット/メニュー運用が未確定（`Ctrl-R` 同等の操作統一が未完）。
 - XML一括適用の「既定オプション適用」導線（ドラッグ&ドロップ相当）が未定義。
-- Batch相当の非対話処理（`importxml -> finalize`）が未定義。
+- Batch相当の非対話処理は引数解析のみ実装済みで、xTranslator同等の最終化パイプライン定義は未完。
 
 ## 目標仕様（本プロジェクト）
 
