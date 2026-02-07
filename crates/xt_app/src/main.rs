@@ -133,6 +133,12 @@ struct RowView {
     selected: bool,
 }
 
+#[derive(Clone, PartialEq)]
+struct FilterSnapshot {
+    entries: Vec<Entry>,
+    counts: ChannelCounts,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum SpacerPosition {
     Top,
@@ -159,7 +165,7 @@ fn main() {
 
 #[component]
 fn App() -> Element {
-    let mut history = use_signal(|| UndoStack::new(sample_entries()));
+    let mut history = use_signal(|| UndoStack::new(Vec::new()));
     let mut state = use_signal(|| TwoPaneState::new(history.read().present().clone()));
 
     let mut scroll_offset = use_signal(|| 0.0f32);
@@ -376,33 +382,47 @@ fn App() -> Element {
     let selected_entry = state.read().selected_entry().cloned();
     let query = state.read().query().to_string();
 
-    let filtered = state.read().filtered_entries().to_vec();
+    // Rebuild heavy derived data only when search/entries change, not on scroll updates.
+    let filtered_snapshot = use_memo(move || {
+        let entries = state.read().filtered_entries().to_vec();
+        let counts = count_channels(&entries);
+        FilterSnapshot { entries, counts }
+    });
+
+    let filtered_len = {
+        let snapshot = filtered_snapshot.read();
+        snapshot.entries.len()
+    };
     let window = virtual_window(
-        filtered.len(),
+        filtered_len,
         item_height,
         *viewport_height.read(),
         *scroll_offset.read(),
         overscan,
     );
-    let rows = filtered
-        .iter()
-        .skip(window.start)
-        .take(window.len())
-        .map(|entry| {
-            let (edid, record_id, ld) = row_fields(&entry.key, &entry.target_text);
-            RowView {
-                key: entry.key.clone(),
-                source_text: entry.source_text.clone(),
-                target_text: entry.target_text.clone(),
-                edid,
-                record_id,
-                ld,
-                selected: selected_key.as_deref() == Some(entry.key.as_str()),
-            }
-        })
-        .collect::<Vec<_>>();
+    let rows = {
+        let snapshot = filtered_snapshot.read();
+        snapshot
+            .entries
+            .iter()
+            .skip(window.start)
+            .take(window.len())
+            .map(|entry| {
+                let (edid, record_id, ld) = row_fields(&entry.key, &entry.target_text);
+                RowView {
+                    key: entry.key.clone(),
+                    source_text: entry.source_text.clone(),
+                    target_text: entry.target_text.clone(),
+                    edid,
+                    record_id,
+                    ld,
+                    selected: selected_key.as_deref() == Some(entry.key.as_str()),
+                }
+            })
+            .collect::<Vec<_>>()
+    };
 
-    let counts = count_channels(&filtered);
+    let counts = filtered_snapshot.read().counts.clone();
     let ratio = if counts.total == 0 {
         0.0f32
     } else {
@@ -533,12 +553,21 @@ fn App() -> Element {
                     class: "grid-body",
                     onscroll: move |ev| {
                         let data = &ev.data;
-                        scroll_offset.set(data.scroll_top() as f32);
-                        viewport_height.set(data.client_height() as f32);
+                        let next_scroll = data.scroll_top() as f32;
+                        let next_viewport = data.client_height() as f32;
+                        // Virtual window only needs to advance when crossing the next row boundary.
+                        let snapped_scroll = (next_scroll / item_height).floor() * item_height;
+                        if (snapped_scroll - *scroll_offset.read()).abs() >= 0.5 {
+                            scroll_offset.set(snapped_scroll);
+                        }
+                        if (next_viewport - *viewport_height.read()).abs() >= 0.5 {
+                            viewport_height.set(next_viewport);
+                        }
                     },
                     Spacer { window: window, position: SpacerPosition::Top }
                     for row in rows {
                         button {
+                            key: "{row.key}",
                             class: if row.selected { "grid-row sel" } else { "grid-row" },
                             onclick: move |_| {
                                 state.write().select(&row.key);
@@ -883,7 +912,7 @@ fn Spacer(window: VirtualWindow, position: SpacerPosition) -> Element {
     rsx! { div { class: "spacer", style: "height: {height}px;" } }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq)]
 struct ChannelCounts {
     total: usize,
     translated: usize,
@@ -1143,18 +1172,6 @@ fn build_native_menu() -> dioxus::desktop::muda::Menu {
 
     let _ = menu.append_items(&[&file_menu, &translate_menu, &options_menu, &tools_menu]);
     menu
-}
-
-fn sample_entries() -> Vec<Entry> {
-    let mut entries = Vec::with_capacity(10_000);
-    for index in 0..10_000 {
-        entries.push(Entry {
-            key: format!("strings:skyrim:{index}"),
-            source_text: format!("Source text {index}"),
-            target_text: format!("訳文 {index}"),
-        });
-    }
-    entries
 }
 
 fn save_overwrite(
