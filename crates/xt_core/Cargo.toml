@@ -1,0 +1,7 @@
+[package]
+name = "xt_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+xt_esp = { path = "../xt_esp" }
