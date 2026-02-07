@@ -30,6 +30,9 @@
 - [x] **T-XML-APPLY-003**: source一致が競合する場合は未適用（missing）になる（FR-XML-06）
 - [x] **T-DICT-001**: 辞書Quick AutoTranslateは選択範囲のみ更新できる（FR-AUTO-03）
 - [x] **T-DICT-002**: Stringsディレクトリから辞書構築できる（FR-DICT-02）
+- [x] **T-APP-004**: 辞書設定の保存フォーマットは round-trip できる（FR-DICT-03）
+- [x] **T-APP-005**: Quick AutoTranslate は選択行なしで実行不可になる（FR-AUTO-03）
+- [x] **T-APP-006**: XML適用ヘルパーが更新件数を返す（FR-XML-07）
 - [x] **T-BATCH-001**: `--load --importxml --finalize` 引数の解析が成立する（FR-BATCH-01）
 
 ## Phase 3（v2: Archive/PEX/音声）

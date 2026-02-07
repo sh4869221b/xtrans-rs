@@ -20,8 +20,9 @@
 - **FR-TM-02（v1）** EspCompare（2esp比較で対訳生成）
 - **FR-DICT-01（MVP）** 辞書言語ペア設定（source/target）
 - **FR-DICT-02（MVP）** 辞書構築（指定したStringsディレクトリを入力）
+- **FR-DICT-03（MVP）** 辞書設定（source/target/root）を再起動後も保持
 - **FR-AUTO-01（MVP）** 辞書ベース自動翻訳（未翻訳のみ対象）
-- **FR-AUTO-03（MVP）** Quick AutoTranslate（選択範囲に対する即時適用）
+- **FR-AUTO-03（MVP）** Quick AutoTranslate（選択範囲に対する即時適用、メニュー/`Ctrl-R`）
 - **FR-AUTO-02（v1）** 自動翻訳の適用範囲指定（全件/選択/フィルタ結果）
 - **FR-SRCH-01（MVP）** 原文/訳文/ID/参照で検索
 - **FR-HEU-01（v1）** 類似候補提示（順位保証）
@@ -42,6 +43,7 @@
 - **FR-XML-04（MVP）** xTranslator XML（`SSTXMLRessources`）をimport可能
 - **FR-XML-05（MVP）** XML一括適用は `key一致` を優先し、`key不一致` 時は `source一致（一意のみ）` をフォールバック適用
 - **FR-XML-06（MVP）** `source一致` が複数訳で競合する場合は未適用（missing）として扱う
+- **FR-XML-07（MVP）** XML一括適用はファイル入力導線（メニュー/ドロップ）を標準とする
 - **FR-UNDO-01（v1）** Undo/Redo（単一/バッチ/インポート）
 - **FR-SAVE-01（MVP）** Strings形式への保存（元拡張子を保持）
 - **FR-SAVE-02（v1）** Plugin形式への保存（ESP/ESM/ESL）

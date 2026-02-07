@@ -22,7 +22,10 @@ fn run() -> Result<(), String> {
 
     if let Some(dir) = opts.generate_dictionary.clone() {
         let source = opts.source.clone().unwrap_or_else(|| "english".to_string());
-        let target = opts.target.clone().unwrap_or_else(|| "japanese".to_string());
+        let target = opts
+            .target
+            .clone()
+            .unwrap_or_else(|| "japanese".to_string());
         let out = opts
             .dict_out
             .clone()
@@ -54,27 +57,38 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("read {}: {e}", import_xml.display()))?;
     let imported = import_entries(&trans_xml).map_err(|e| format!("parse import xml: {e:?}"))?;
     let (mut merged, stats) = apply_xml_default(&base_entries, &imported);
+    println!(
+        "xml apply: updated={} unchanged={} missing={}",
+        stats.updated, stats.unchanged, stats.missing
+    );
 
+    let mut dict_updated = 0usize;
     if let Some(dict_path) = opts.dict_in.clone() {
         let dict = TranslationDictionary::load_from_path(&dict_path).map_err(|e| e.to_string())?;
         let all_keys = merged.iter().map(|e| e.key.clone()).collect::<Vec<_>>();
-        let (next, dict_updated) = dict.apply_quick(&merged, &all_keys, true);
+        let (next, updated) = dict.apply_quick(&merged, &all_keys, true);
         merged = next;
-        println!("quick auto-translate applied: {dict_updated}");
+        dict_updated = updated;
+        println!("quick auto-translate applied: updated={dict_updated}");
     }
 
     if let Some(dict_out) = opts.dict_out.clone() {
         let dict = TranslationDictionary::build_from_entries(&merged);
         dict.save_to_path(&dict_out).map_err(|e| e.to_string())?;
-        println!("saved dictionary: pairs={} out={}", dict.len(), dict_out.display());
+        println!(
+            "saved dictionary: pairs={} out={}",
+            dict.len(),
+            dict_out.display()
+        );
     }
 
     finalize_output(&base_kind, &merged, &finalize, &opts)?;
     println!(
-        "finalized: updated={} unchanged={} missing={} out={}",
+        "finalized: xml_updated={} xml_unchanged={} xml_missing={} dict_updated={} out={}",
         stats.updated,
         stats.unchanged,
         stats.missing,
+        dict_updated,
         finalize.display()
     );
     Ok(())
@@ -106,9 +120,7 @@ fn load_base(opts: &BatchOptions) -> Result<(Vec<Entry>, BaseKind), String> {
         count += 1;
     }
     if count != 1 {
-        return Err(
-            "exactly one of --load, --load-strings, --load-plugin is required".to_string(),
-        );
+        return Err("exactly one of --load, --load-strings, --load-plugin is required".to_string());
     }
 
     if let Some(path) = opts.load.clone() {
@@ -182,8 +194,7 @@ fn finalize_output(
     _opts: &BatchOptions,
 ) -> Result<(), String> {
     if let Some(parent) = finalize.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     match base {
         BaseKind::Xml => {

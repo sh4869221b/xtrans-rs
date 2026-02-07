@@ -12,6 +12,12 @@ The current implementation intentionally focuses on the following workflows only
 1. Dictionary-based auto translation (build/apply dictionary)
 2. XML-based bulk translation import/apply (including xTranslator XML compatibility)
 
+Current UI operation for these workflows:
+
+- Dictionary build: `翻訳 > 辞書を構築`
+- Quick AutoTranslate: `翻訳 > Quick自動翻訳` or `Ctrl-R` (selected row only)
+- XML bulk apply: `ファイル > 翻訳XMLを一括適用` or XML drag-and-drop on the window
+
 Everything outside these workflows is partial, experimental, or not implemented yet.
 
 ## Legal and Attribution

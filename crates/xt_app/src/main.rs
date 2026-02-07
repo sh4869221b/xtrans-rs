@@ -1,10 +1,14 @@
+use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use xt_core::dictionary::TranslationDictionary;
 use xt_core::diff::{update_source, DiffEntry, EntryStatus};
 use xt_core::encoding::{decode, encode, Encoding, EncodingError};
-use xt_core::formats::esp::{apply_translations, extract_strings as extract_esp_strings, ExtractedString};
+use xt_core::formats::esp::{
+    apply_translations, extract_strings as extract_esp_strings, ExtractedString,
+};
 use xt_core::formats::plugin::{read_plugin, write_plugin, PluginFile};
 use xt_core::formats::plugin_binary::extract_null_terminated_utf8;
 use xt_core::formats::strings::{
@@ -12,7 +16,7 @@ use xt_core::formats::strings::{
     StringsEntry, StringsFile,
 };
 use xt_core::hybrid::{build_hybrid_entries, HybridEntry};
-use xt_core::import_export::{apply_xml_default, export_entries, import_entries};
+use xt_core::import_export::{apply_xml_default, export_entries, import_entries, XmlApplyStats};
 use xt_core::model::Entry;
 use xt_core::ui_state::TwoPaneState;
 use xt_core::undo::UndoStack;
@@ -39,6 +43,11 @@ const MENU_LANG_RESET: &str = "options.lang_reset";
 const MENU_UNDO: &str = "tools.undo";
 const MENU_REDO: &str = "tools.redo";
 const MENU_LOG_TAB: &str = "tools.log_tab";
+
+const DEFAULT_DICT_SOURCE_LANG: &str = "english";
+const DEFAULT_DICT_TARGET_LANG: &str = "japanese";
+const DEFAULT_DICT_ROOT: &str = "./Data/Strings/Translations";
+const DICT_PREFS_FILE: &str = "dict_prefs.v1";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -86,6 +95,31 @@ impl StringsKind {
             None
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DictionaryPrefs {
+    source_lang: String,
+    target_lang: String,
+    root: String,
+}
+
+impl Default for DictionaryPrefs {
+    fn default() -> Self {
+        Self {
+            source_lang: DEFAULT_DICT_SOURCE_LANG.to_string(),
+            target_lang: DEFAULT_DICT_TARGET_LANG.to_string(),
+            root: DEFAULT_DICT_ROOT.to_string(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DictionaryBuildSummary {
+    built_at_unix: u64,
+    pairs: usize,
+    files_seen: usize,
+    file_pairs: usize,
 }
 
 #[derive(Clone)]
@@ -155,13 +189,37 @@ fn App() -> Element {
     let mut loaded_plugin_path = use_signal(|| Option::<PathBuf>::None);
     let mut loaded_esp_strings = use_signal(|| Option::<Vec<ExtractedString>>::None);
 
+    let initial_prefs = load_dictionary_prefs().unwrap_or_default();
     let mut dict = use_signal(|| Option::<TranslationDictionary>::None);
-    let mut dict_source_lang = use_signal(|| "english".to_string());
-    let mut dict_target_lang = use_signal(|| "japanese".to_string());
-    let mut dict_root = use_signal(|| "./Data/Strings/Translations".to_string());
+    let mut dict_source_lang = use_signal({
+        let value = initial_prefs.source_lang.clone();
+        move || value.clone()
+    });
+    let mut dict_target_lang = use_signal({
+        let value = initial_prefs.target_lang.clone();
+        move || value.clone()
+    });
+    let mut dict_root = use_signal({
+        let value = initial_prefs.root.clone();
+        move || value.clone()
+    });
     let mut dict_status = use_signal(String::new);
+    let mut dict_prefs_error = use_signal(String::new);
+    let mut dict_build_summary = use_signal(|| Option::<DictionaryBuildSummary>::None);
 
     let mut active_tab = use_signal(|| Tab::Home);
+
+    use_effect(move || {
+        let prefs = DictionaryPrefs {
+            source_lang: dict_source_lang(),
+            target_lang: dict_target_lang(),
+            root: dict_root(),
+        };
+        match save_dictionary_prefs(&prefs) {
+            Ok(()) => dict_prefs_error.set(String::new()),
+            Err(err) => dict_prefs_error.set(format!("辞書設定保存失敗: {err}")),
+        }
+    });
 
     #[cfg(all(
         feature = "desktop",
@@ -185,21 +243,11 @@ fn App() -> Element {
                 xml_error.set(None);
                 file_status.set("XMLを書き出しました（エディタ）".to_string());
             }
-            MENU_XML_APPLY => match import_entries(&xml_text()) {
-                Ok(imported) => {
-                    let (merged, stats) = apply_xml_default(state.read().entries(), &imported);
-                    if stats.updated > 0 {
-                        history.write().apply(merged.clone());
-                        state.write().set_entries(merged);
-                    }
-                    file_status.set(format!(
-                        "XML適用: updated={} unchanged={} missing={}",
-                        stats.updated, stats.unchanged, stats.missing
-                    ));
-                    xml_error.set(None);
-                }
-                Err(err) => xml_error.set(Some(format!("XML import error: {err:?}"))),
-            },
+            MENU_XML_APPLY => {
+                document::eval(
+                    "const el = document.getElementById('xml-picker-native'); if (el) { el.click(); }",
+                );
+            }
             MENU_SAVE_OVERWRITE => match save_overwrite(
                 state.read().entries(),
                 loaded_strings(),
@@ -234,6 +282,12 @@ fn App() -> Element {
                     Ok((built, stats)) => {
                         let pairs = built.len();
                         dict.set(Some(built));
+                        dict_build_summary.set(Some(DictionaryBuildSummary {
+                            built_at_unix: now_unix_seconds(),
+                            pairs,
+                            files_seen: stats.files_seen,
+                            file_pairs: stats.file_pairs,
+                        }));
                         dict_status.set(format!(
                             "辞書構築: pairs={} files={} pair_files={}",
                             pairs, stats.files_seen, stats.file_pairs
@@ -243,28 +297,32 @@ fn App() -> Element {
                 }
             }
             MENU_QUICK_AUTO => {
-                let Some(d) = dict() else {
-                    dict_status.set("辞書未構築".to_string());
-                    return;
+                let selected = state.read().selected_key().map(|s| s.to_string());
+                let entries = state.read().entries().to_vec();
+                let result = {
+                    let current = dict.read();
+                    apply_quick_auto_selection(current.as_ref(), &entries, selected)
                 };
-                let selected = state
-                    .read()
-                    .selected_key()
-                    .map(|s| s.to_string())
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                let (next, updated) = d.apply_quick(state.read().entries(), &selected, true);
-                if updated > 0 {
-                    history.write().apply(next.clone());
-                    state.write().set_entries(next);
+                match result {
+                    Ok((next, updated)) => {
+                        if updated > 0 {
+                            history.write().apply(next.clone());
+                            state.write().set_entries(next);
+                        }
+                        dict_status.set(format!("Quick自動翻訳: updated={updated}"));
+                    }
+                    Err(err) => dict_status.set(err.to_string()),
                 }
-                dict_status.set(format!("Quick自動翻訳: updated={updated}"));
             }
             MENU_LANG_PANEL => active_tab.set(Tab::Lang),
             MENU_LANG_RESET => {
-                dict_source_lang.set("english".to_string());
-                dict_target_lang.set("japanese".to_string());
-                dict_status.set("言語ペアを english -> japanese に設定".to_string());
+                dict_source_lang.set(DEFAULT_DICT_SOURCE_LANG.to_string());
+                dict_target_lang.set(DEFAULT_DICT_TARGET_LANG.to_string());
+                dict_root.set(DEFAULT_DICT_ROOT.to_string());
+                dict_status.set(format!(
+                    "言語ペアを {} -> {} に設定",
+                    DEFAULT_DICT_SOURCE_LANG, DEFAULT_DICT_TARGET_LANG
+                ));
             }
             MENU_UNDO => {
                 if history.write().undo() {
@@ -281,6 +339,37 @@ fn App() -> Element {
             MENU_LOG_TAB => active_tab.set(Tab::Log),
             _ => {}
         });
+    }
+
+    #[cfg(all(
+        feature = "desktop",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
+    {
+        use dioxus::desktop::{use_global_shortcut, HotKeyState};
+        if let Err(err) = use_global_shortcut("Ctrl+R", move |hotkey_state| {
+            if hotkey_state != HotKeyState::Pressed {
+                return;
+            }
+            let selected = state.read().selected_key().map(|s| s.to_string());
+            let entries = state.read().entries().to_vec();
+            let result = {
+                let current = dict.read();
+                apply_quick_auto_selection(current.as_ref(), &entries, selected)
+            };
+            match result {
+                Ok((next, updated)) => {
+                    if updated > 0 {
+                        history.write().apply(next.clone());
+                        state.write().set_entries(next);
+                    }
+                    dict_status.set(format!("Quick自動翻訳(Ctrl+R): updated={updated}"));
+                }
+                Err(err) => dict_status.set(err.to_string()),
+            }
+        }) {
+            dict_status.set(format!("ショートカット登録失敗: {err:?}"));
+        }
     }
 
     let selected_key = state.read().selected_key().map(|s| s.to_string());
@@ -326,6 +415,49 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
 
         div { id: "app-shell",
+            ondragover: move |event| {
+                event.prevent_default();
+            },
+            ondrop: move |event| async move {
+                event.prevent_default();
+                let Some(file) = event.files().into_iter().next() else {
+                    return;
+                };
+                let path = file.path();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if ext != "xml" {
+                    file_status.set(format!("drop ignored (not xml): {}", path.display()));
+                    return;
+                }
+                match file.read_string().await {
+                    Ok(contents) => {
+                        xml_text.set(contents.clone());
+                        let current_entries = state.read().entries().to_vec();
+                        match apply_xml_payload(&current_entries, &contents) {
+                            Ok((merged, stats)) => {
+                                if stats.updated > 0 {
+                                    history.write().apply(merged.clone());
+                                    state.write().set_entries(merged);
+                                }
+                                file_status.set(format!(
+                                    "XML適用(drop): updated={} unchanged={} missing={}",
+                                    stats.updated, stats.unchanged, stats.missing
+                                ));
+                                xml_error.set(None);
+                            }
+                            Err(err) => {
+                                xml_error.set(Some(err.clone()));
+                                file_status.set(format!("XML適用失敗(drop): {err}"));
+                            }
+                        }
+                    }
+                    Err(err) => file_status.set(format!("XML read error (drop): {err}")),
+                }
+            },
             div { class: "toolbar",
                 button { class: "tool-ic", "F" }
                 button { class: "tool-ic", "T" }
@@ -495,6 +627,12 @@ fn App() -> Element {
                     div { class: "log",
                         if !file_status().is_empty() { p { "{file_status}" } }
                         if !dict_status().is_empty() { p { "{dict_status}" } }
+                        if !dict_prefs_error().is_empty() { p { class: "err", "{dict_prefs_error}" } }
+                        if let Some(summary) = dict_build_summary() {
+                            p {
+                                "辞書情報: built_at(unix)={summary.built_at_unix} pairs={summary.pairs} files={summary.files_seen} pair_files={summary.file_pairs}"
+                            }
+                        }
                         if let Some(err) = xml_error() { p { class: "err", "{err}" } }
                         if let Some(err) = hybrid_error() { p { class: "err", "{err}" } }
                         if let Some(status) = diff_status() { p { "Diff status: {status:?}" } }
@@ -510,24 +648,7 @@ fn App() -> Element {
                 }
 
                 div { class: "io-row",
-                    label { class: "io",
-                        "Load XML"
-                        input {
-                            r#type: "file",
-                            accept: ".xml",
-                            onchange: move |event| async move {
-                                let Some(file) = event.files().into_iter().next() else { return; };
-                                match file.read_string().await {
-                                    Ok(contents) => {
-                                        xml_text.set(contents);
-                                        xml_error.set(None);
-                                        file_status.set("XMLを読み込みました".to_string());
-                                    }
-                                    Err(err) => file_status.set(format!("XML read error: {err}")),
-                                }
-                            },
-                        }
-                    }
+                    p { class: "inline", "XML適用: メニュー「ファイル > 翻訳XMLを一括適用」またはXMLファイルのドラッグ&ドロップを使用" }
                 }
 
                 div { class: "io-row",
@@ -555,12 +676,49 @@ fn App() -> Element {
                     if !dict_status().is_empty() {
                         p { class: "inline", "{dict_status}" }
                     }
+                    if !dict_prefs_error().is_empty() {
+                        p { class: "inline err", "{dict_prefs_error}" }
+                    }
                 }
 
                 textarea {
                     class: "xml",
                     value: "{xml_text}",
                     oninput: move |e| xml_text.set(e.value()),
+                }
+
+                input {
+                    id: "xml-picker-native",
+                    style: "display:none;",
+                    r#type: "file",
+                    accept: ".xml",
+                    onchange: move |event| async move {
+                        let Some(file) = event.files().into_iter().next() else { return; };
+                        match file.read_string().await {
+                            Ok(contents) => {
+                                xml_text.set(contents.clone());
+                                let current_entries = state.read().entries().to_vec();
+                                match apply_xml_payload(&current_entries, &contents) {
+                                    Ok((merged, stats)) => {
+                                        if stats.updated > 0 {
+                                            history.write().apply(merged.clone());
+                                            state.write().set_entries(merged);
+                                        }
+                                        file_status.set(format!(
+                                            "XML適用: updated={} unchanged={} missing={}",
+                                            stats.updated, stats.unchanged, stats.missing
+                                        ));
+                                        xml_error.set(None);
+                                    }
+                                    Err(err) => {
+                                        xml_error.set(Some(err.clone()));
+                                        file_status.set(format!("XML適用失敗: {err}"));
+                                    }
+                                }
+                            }
+                            Err(err) => file_status.set(format!("XML read error: {err}")),
+                        }
+                    },
                 }
 
                 input {
@@ -764,12 +922,178 @@ fn row_fields(key: &str, target_text: &str) -> (String, String, String) {
     (edid, record_id, ld)
 }
 
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn apply_quick_auto_selection(
+    dict: Option<&TranslationDictionary>,
+    entries: &[Entry],
+    selected_key: Option<String>,
+) -> Result<(Vec<Entry>, usize), &'static str> {
+    let Some(dict) = dict else {
+        return Err("辞書未構築");
+    };
+    let Some(selected_key) = selected_key else {
+        return Err("Quick自動翻訳対象の行を選択してください");
+    };
+    let selected = vec![selected_key];
+    Ok(dict.apply_quick(entries, &selected, true))
+}
+
+fn apply_xml_payload(
+    current: &[Entry],
+    xml_contents: &str,
+) -> Result<(Vec<Entry>, XmlApplyStats), String> {
+    let imported = import_entries(xml_contents).map_err(|err| format!("{err:?}"))?;
+    Ok(apply_xml_default(current, &imported))
+}
+
+fn dictionary_prefs_path() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(dir).join("xtrans-rs").join(DICT_PREFS_FILE));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(
+            PathBuf::from(home)
+                .join(".config")
+                .join("xtrans-rs")
+                .join(DICT_PREFS_FILE),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return Some(
+                PathBuf::from(appdata)
+                    .join("xtrans-rs")
+                    .join(DICT_PREFS_FILE),
+            );
+        }
+    }
+    None
+}
+
+fn load_dictionary_prefs() -> Result<DictionaryPrefs, String> {
+    let Some(path) = dictionary_prefs_path() else {
+        return Ok(DictionaryPrefs::default());
+    };
+    if !path.exists() {
+        return Ok(DictionaryPrefs::default());
+    }
+    let content =
+        std::fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    parse_dictionary_prefs(&content)
+}
+
+fn save_dictionary_prefs(prefs: &DictionaryPrefs) -> Result<(), String> {
+    let Some(path) = dictionary_prefs_path() else {
+        return Err("設定保存先を解決できません".to_string());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("create {}: {err}", parent.display()))?;
+    }
+    std::fs::write(&path, serialize_dictionary_prefs(prefs))
+        .map_err(|err| format!("write {}: {err}", path.display()))
+}
+
+fn serialize_dictionary_prefs(prefs: &DictionaryPrefs) -> String {
+    let mut lines = Vec::new();
+    lines.push("version=1".to_string());
+    lines.push(format!(
+        "source_lang={}",
+        escape_pref_value(&prefs.source_lang)
+    ));
+    lines.push(format!(
+        "target_lang={}",
+        escape_pref_value(&prefs.target_lang)
+    ));
+    lines.push(format!("root={}", escape_pref_value(&prefs.root)));
+    lines.join("\n")
+}
+
+fn parse_dictionary_prefs(content: &str) -> Result<DictionaryPrefs, String> {
+    let mut out = DictionaryPrefs::default();
+    let mut version = None::<u32>;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err("辞書設定フォーマットが不正です".to_string());
+        };
+        match key {
+            "version" => {
+                let v = value
+                    .parse::<u32>()
+                    .map_err(|_| "辞書設定versionが不正です".to_string())?;
+                version = Some(v);
+            }
+            "source_lang" => out.source_lang = unescape_pref_value(value)?,
+            "target_lang" => out.target_lang = unescape_pref_value(value)?,
+            "root" => out.root = unescape_pref_value(value)?,
+            _ => {}
+        }
+    }
+    match version {
+        Some(1) => Ok(out),
+        Some(v) => Err(format!("未対応の辞書設定version: {v}")),
+        None => Err("辞書設定versionがありません".to_string()),
+    }
+}
+
+fn escape_pref_value(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'%' => out.push_str("%25"),
+            b'=' => out.push_str("%3D"),
+            b'\n' => out.push_str("%0A"),
+            b'\r' => out.push_str("%0D"),
+            _ => out.push(b as char),
+        }
+    }
+    out
+}
+
+fn unescape_pref_value(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err("辞書設定エスケープが不正です".to_string());
+            }
+            let hi = (bytes[i + 1] as char)
+                .to_digit(16)
+                .ok_or_else(|| "辞書設定エスケープが不正です".to_string())?;
+            let lo = (bytes[i + 2] as char)
+                .to_digit(16)
+                .ok_or_else(|| "辞書設定エスケープが不正です".to_string())?;
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| "辞書設定文字列が不正です".to_string())
+}
+
 #[cfg(all(
     feature = "desktop",
     any(target_os = "windows", target_os = "linux", target_os = "macos")
 ))]
 fn build_native_menu() -> dioxus::desktop::muda::Menu {
-    use dioxus::desktop::muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    use dioxus::desktop::muda::{
+        accelerator::{Accelerator, Code, Modifiers},
+        Menu, MenuItem, PredefinedMenuItem, Submenu,
+    };
 
     let menu = Menu::new();
 
@@ -797,7 +1121,12 @@ fn build_native_menu() -> dioxus::desktop::muda::Menu {
 
     let translate_menu = Submenu::new("翻訳(T)", true);
     let dict_build = MenuItem::with_id(MENU_DICT_BUILD, "辞書を構築", true, None);
-    let quick_auto = MenuItem::with_id(MENU_QUICK_AUTO, "Quick自動翻訳", true, None);
+    let quick_auto = MenuItem::with_id(
+        MENU_QUICK_AUTO,
+        "Quick自動翻訳",
+        true,
+        Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyR)),
+    );
     let _ = translate_menu.append_items(&[&dict_build, &quick_auto]);
 
     let options_menu = Submenu::new("オプション(Z)", true);
@@ -876,7 +1205,8 @@ fn save_as(
         if let Some(plugin) = loaded_plugin {
             let out = with_suffix_path(&plugin_path, "_translated");
             let encoded = write_plugin(&plugin).map_err(|e| format!("{e:?}"))?;
-            std::fs::write(&out, encoded).map_err(|e| format!("plugin save {}: {e}", out.display()))?;
+            std::fs::write(&out, encoded)
+                .map_err(|e| format!("plugin save {}: {e}", out.display()))?;
             return Ok(out);
         }
     }
@@ -891,7 +1221,12 @@ fn save_as(
     Err("保存対象がありません".to_string())
 }
 
-fn save_strings(entries: &[Entry], base: &StringsFile, kind: StringsKind, path: &Path) -> Result<PathBuf, String> {
+fn save_strings(
+    entries: &[Entry],
+    base: &StringsFile,
+    kind: StringsKind,
+    path: &Path,
+) -> Result<PathBuf, String> {
     if path.exists() {
         ensure_backup(path)?;
     }
@@ -906,7 +1241,12 @@ fn save_strings(entries: &[Entry], base: &StringsFile, kind: StringsKind, path: 
     Ok(path.to_path_buf())
 }
 
-fn save_esp(entries: &[Entry], input_path: &Path, output_path: &Path, extracted: Vec<ExtractedString>) -> Result<PathBuf, String> {
+fn save_esp(
+    entries: &[Entry],
+    input_path: &Path,
+    output_path: &Path,
+    extracted: Vec<ExtractedString>,
+) -> Result<PathBuf, String> {
     if input_path == output_path && input_path.exists() {
         ensure_backup(input_path)?;
     }
@@ -928,8 +1268,14 @@ fn save_esp(entries: &[Entry], input_path: &Path, output_path: &Path, extracted:
 
     let out_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let workspace_root = workspace_root_from_plugin(input_path);
-    let written = apply_translations(input_path, &workspace_root, out_dir, translated, Some("english"))
-        .map_err(|e| format!("esp apply failed {}: {e}", input_path.display()))?;
+    let written = apply_translations(
+        input_path,
+        &workspace_root,
+        out_dir,
+        translated,
+        Some("english"),
+    )
+    .map_err(|e| format!("esp apply failed {}: {e}", input_path.display()))?;
 
     if written == output_path {
         return Ok(written);
@@ -1018,7 +1364,10 @@ fn next_backup_path(path: &Path) -> PathBuf {
 }
 
 fn with_suffix_path(path: &Path, suffix: &str) -> PathBuf {
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let file = if ext.is_empty() {
         format!("{stem}{suffix}")
@@ -1091,5 +1440,52 @@ mod tests {
         let b1 = next_backup_path(&base);
         assert_ne!(b0, b1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn t_app_004_dict_prefs_round_trip() {
+        let prefs = DictionaryPrefs {
+            source_lang: "english".to_string(),
+            target_lang: "japanese".to_string(),
+            root: "/tmp/with=equals".to_string(),
+        };
+        let encoded = serialize_dictionary_prefs(&prefs);
+        let decoded = parse_dictionary_prefs(&encoded).expect("parse prefs");
+        assert_eq!(decoded, prefs);
+    }
+
+    #[test]
+    fn t_app_005_quick_auto_requires_selection() {
+        let entries = vec![Entry {
+            key: "k1".to_string(),
+            source_text: "Iron Sword".to_string(),
+            target_text: String::new(),
+        }];
+        let dict = TranslationDictionary::build_from_entries(&[Entry {
+            key: "d".to_string(),
+            source_text: "Iron Sword".to_string(),
+            target_text: "鉄の剣".to_string(),
+        }]);
+        let err =
+            apply_quick_auto_selection(Some(&dict), &entries, None).expect_err("selection error");
+        assert_eq!(err, "Quick自動翻訳対象の行を選択してください");
+    }
+
+    #[test]
+    fn t_app_006_apply_xml_payload_updates_entry() {
+        let current = vec![Entry {
+            key: "k1".to_string(),
+            source_text: "Iron Sword".to_string(),
+            target_text: String::new(),
+        }];
+        let xml = export_entries(&[Entry {
+            key: "k1".to_string(),
+            source_text: "Iron Sword".to_string(),
+            target_text: "鉄の剣".to_string(),
+        }]);
+        let (merged, stats) = apply_xml_payload(&current, &xml).expect("apply xml");
+        assert_eq!(stats.updated, 1);
+        assert_eq!(stats.missing, 0);
+        assert_eq!(merged[0].target_text, "鉄の剣");
     }
 }
