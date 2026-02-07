@@ -1,12 +1,15 @@
+use dioxus::prelude::*;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use xt_core::dictionary::TranslationDictionary;
 use xt_core::diff::{update_source, DiffEntry, EntryStatus};
 use xt_core::encoding::{decode, encode, Encoding, EncodingError};
-use xt_core::dictionary::TranslationDictionary;
+use xt_core::formats::esp::{apply_translations, extract_strings as extract_esp_strings, ExtractedString};
 use xt_core::formats::plugin::{read_plugin, write_plugin, PluginFile};
-use xt_core::formats::esp::{apply_translations, extract_strings as extract_esp_strings};
 use xt_core::formats::plugin_binary::extract_null_terminated_utf8;
 use xt_core::formats::strings::{
     read_dlstrings, read_ilstrings, read_strings, write_dlstrings, write_ilstrings, write_strings,
-    StringsFile,
+    StringsEntry, StringsFile,
 };
 use xt_core::hybrid::{build_hybrid_entries, HybridEntry};
 use xt_core::import_export::{apply_xml_default, export_entries, import_entries};
@@ -18,14 +21,49 @@ use xt_core::validation::{
     ValidationIssue,
 };
 use xt_core::virtual_list::{virtual_window, VirtualWindow};
-use dioxus::prelude::*;
-use xt_core::formats::esp::ExtractedString;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
+
+const MENU_XML_EXPORT: &str = "file.xml_export";
+const MENU_XML_APPLY: &str = "file.xml_apply";
+const MENU_SAVE_OVERWRITE: &str = "file.save_overwrite";
+const MENU_SAVE_AS: &str = "file.save_as";
+const MENU_DICT_BUILD: &str = "translate.dict_build";
+const MENU_QUICK_AUTO: &str = "translate.quick_auto";
+const MENU_LANG_PANEL: &str = "options.lang_panel";
+const MENU_LANG_RESET: &str = "options.lang_reset";
+const MENU_UNDO: &str = "tools.undo";
+const MENU_REDO: &str = "tools.redo";
+const MENU_LOG_TAB: &str = "tools.log_tab";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Home,
+    Heuristic,
+    Lang,
+    Esp,
+    Pex,
+    Quest,
+    Npc,
+    Log,
+}
+
+impl Tab {
+    fn all() -> [(Tab, &'static str); 8] {
+        [
+            (Tab::Home, "ホーム"),
+            (Tab::Heuristic, "ヒューリスティック候補"),
+            (Tab::Lang, "言語"),
+            (Tab::Esp, "Espツリー"),
+            (Tab::Pex, "Pex解析"),
+            (Tab::Quest, "クエスト一覧"),
+            (Tab::Npc, "NPC/音声リンク"),
+            (Tab::Log, "ログ"),
+        ]
+    }
+}
 
 #[derive(Clone, Copy)]
 enum StringsKind {
@@ -35,18 +73,45 @@ enum StringsKind {
 }
 
 impl StringsKind {
-    fn from_extension(ext: &str) -> Self {
-        if ext.eq_ignore_ascii_case("dlstrings") {
-            Self::DlStrings
+    fn from_extension(ext: &str) -> Option<Self> {
+        if ext.eq_ignore_ascii_case("strings") {
+            Some(Self::Strings)
+        } else if ext.eq_ignore_ascii_case("dlstrings") {
+            Some(Self::DlStrings)
         } else if ext.eq_ignore_ascii_case("ilstrings") {
-            Self::IlStrings
+            Some(Self::IlStrings)
         } else {
-            Self::Strings
+            None
         }
     }
 }
 
+#[derive(Clone)]
+struct RowView {
+    key: String,
+    source_text: String,
+    target_text: String,
+    edid: String,
+    record_id: String,
+    ld: String,
+    selected: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SpacerPosition {
+    Top,
+    Bottom,
+}
+
 fn main() {
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    {
+        use dioxus::desktop::Config;
+        dioxus::LaunchBuilder::new()
+            .with_cfg(Config::new().with_menu(build_native_menu()))
+            .launch(App);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     dioxus::launch(App);
 }
 
@@ -54,105 +119,184 @@ fn main() {
 fn App() -> Element {
     let mut history = use_signal(|| UndoStack::new(sample_entries()));
     let mut state = use_signal(|| TwoPaneState::new(history.read().present().clone()));
+
     let mut scroll_offset = use_signal(|| 0.0f32);
     let mut viewport_height = use_signal(|| 520.0f32);
-    let mut edit_source = use_signal(|| String::new());
-    let mut edit_target = use_signal(|| String::new());
-    let mut xml_text = use_signal(|| String::new());
+    let item_height = 64.0f32;
+    let overscan = 8usize;
+
+    let mut edit_source = use_signal(String::new);
+    let mut edit_target = use_signal(String::new);
+
+    let mut xml_text = use_signal(String::new);
     let mut xml_error = use_signal(|| Option::<String>::None);
+    let mut file_status = use_signal(String::new);
+
     let mut validation_issues = use_signal(Vec::<ValidationIssue>::new);
     let mut diff_status = use_signal(|| Option::<EntryStatus>::None);
-    let mut encoding_status = use_signal(|| String::new());
+    let mut encoding_status = use_signal(String::new);
+
     let mut hybrid_preview = use_signal(Vec::<HybridEntry>::new);
     let mut hybrid_error = use_signal(|| Option::<String>::None);
-    let mut loaded_plugin = use_signal(|| Option::<PluginFile>::None);
+
     let mut loaded_strings = use_signal(|| Option::<StringsFile>::None);
-    let mut loaded_strings_path = use_signal(|| Option::<PathBuf>::None);
     let mut loaded_strings_kind = use_signal(|| Option::<StringsKind>::None);
+    let mut loaded_strings_path = use_signal(|| Option::<PathBuf>::None);
+
+    let mut loaded_plugin = use_signal(|| Option::<PluginFile>::None);
     let mut loaded_plugin_path = use_signal(|| Option::<PathBuf>::None);
-    let mut file_status = use_signal(|| String::new());
     let mut loaded_esp_strings = use_signal(|| Option::<Vec<ExtractedString>>::None);
-    let mut active_tab = use_signal(|| "home".to_string());
-    let mut dictionary = use_signal(|| Option::<TranslationDictionary>::None);
-    let mut dictionary_status = use_signal(String::new);
+
+    let mut dict = use_signal(|| Option::<TranslationDictionary>::None);
     let mut dict_source_lang = use_signal(|| "english".to_string());
     let mut dict_target_lang = use_signal(|| "japanese".to_string());
     let mut dict_root = use_signal(|| "./Data/Strings/Translations".to_string());
-    let item_height = 64.0f32;
-    let overscan = 8usize;
-    let list_padding = 0.0f32;
+    let mut dict_status = use_signal(String::new);
 
-    let (
-        window,
-        entries,
-        selected_key,
-        selected_entry,
-        query,
-        total_count,
-        translated_count,
-        strings_count,
-        dlstrings_count,
-        ilstrings_count,
-    ) = {
-        let state = state.read();
-        let filtered = state.filtered_entries();
-        let total = filtered.len();
-        let mut strings_count = 0usize;
-        let mut dlstrings_count = 0usize;
-        let mut ilstrings_count = 0usize;
-        let mut translated_count = 0usize;
-        for entry in filtered.iter() {
-            if !entry.target_text.is_empty() {
-                translated_count += 1;
+    let mut active_tab = use_signal(|| Tab::Home);
+
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    {
+        use dioxus::desktop::use_muda_event_handler;
+        use_muda_event_handler(move |event| match event.id.as_ref() {
+            MENU_XML_EXPORT => {
+                xml_text.set(export_entries(state.read().entries()));
+                xml_error.set(None);
+                file_status.set("XMLを書き出しました（エディタ）".to_string());
             }
-            let key = entry.key.to_ascii_lowercase();
-            if key.contains("dlstrings") {
-                dlstrings_count += 1;
-            } else if key.contains("ilstrings") {
-                ilstrings_count += 1;
-            } else {
-                strings_count += 1;
+            MENU_XML_APPLY => match import_entries(&xml_text()) {
+                Ok(imported) => {
+                    let (merged, stats) = apply_xml_default(state.read().entries(), &imported);
+                    if stats.updated > 0 {
+                        history.write().apply(merged.clone());
+                        state.write().set_entries(merged);
+                    }
+                    file_status.set(format!(
+                        "XML適用: updated={} unchanged={} missing={}",
+                        stats.updated, stats.unchanged, stats.missing
+                    ));
+                    xml_error.set(None);
+                }
+                Err(err) => xml_error.set(Some(format!("XML import error: {err:?}"))),
+            },
+            MENU_SAVE_OVERWRITE => match save_overwrite(
+                state.read().entries(),
+                loaded_strings(),
+                loaded_strings_kind(),
+                loaded_strings_path(),
+                loaded_plugin(),
+                loaded_plugin_path(),
+                loaded_esp_strings(),
+            ) {
+                Ok(path) => file_status.set(format!("保存: {}", path.display())),
+                Err(err) => file_status.set(format!("保存失敗: {err}")),
+            },
+            MENU_SAVE_AS => match save_as(
+                state.read().entries(),
+                loaded_strings(),
+                loaded_strings_kind(),
+                loaded_strings_path(),
+                loaded_plugin(),
+                loaded_plugin_path(),
+                loaded_esp_strings(),
+            ) {
+                Ok(path) => file_status.set(format!("別名保存: {}", path.display())),
+                Err(err) => file_status.set(format!("別名保存失敗: {err}")),
+            },
+            MENU_DICT_BUILD => {
+                let root = PathBuf::from(dict_root());
+                match TranslationDictionary::build_from_strings_dir(
+                    &root,
+                    &dict_source_lang(),
+                    &dict_target_lang(),
+                ) {
+                    Ok((built, stats)) => {
+                        let pairs = built.len();
+                        dict.set(Some(built));
+                        dict_status.set(format!(
+                            "辞書構築: pairs={} files={} pair_files={}",
+                            pairs, stats.files_seen, stats.file_pairs
+                        ));
+                    }
+                    Err(err) => dict_status.set(format!("辞書構築失敗: {err}")),
+                }
             }
-        }
-        let window = virtual_window(
-            total,
-            item_height,
-            *viewport_height.read(),
-            *scroll_offset.read(),
-            overscan,
-        );
-        let selected_key = state.selected_key().map(|key| key.to_string());
-        let entries = filtered
-            .iter()
-            .skip(window.start)
-            .take(window.len())
-            .map(|entry| EntryView {
+            MENU_QUICK_AUTO => {
+                let Some(d) = dict() else {
+                    dict_status.set("辞書未構築".to_string());
+                    return;
+                };
+                let selected = state
+                    .read()
+                    .selected_key()
+                    .map(|s| s.to_string())
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let (next, updated) = d.apply_quick(state.read().entries(), &selected, true);
+                if updated > 0 {
+                    history.write().apply(next.clone());
+                    state.write().set_entries(next);
+                }
+                dict_status.set(format!("Quick自動翻訳: updated={updated}"));
+            }
+            MENU_LANG_PANEL => active_tab.set(Tab::Lang),
+            MENU_LANG_RESET => {
+                dict_source_lang.set("english".to_string());
+                dict_target_lang.set("japanese".to_string());
+                dict_status.set("言語ペアを english -> japanese に設定".to_string());
+            }
+            MENU_UNDO => {
+                if history.write().undo() {
+                    let entries = history.read().present().clone();
+                    state.write().set_entries(entries);
+                }
+            }
+            MENU_REDO => {
+                if history.write().redo() {
+                    let entries = history.read().present().clone();
+                    state.write().set_entries(entries);
+                }
+            }
+            MENU_LOG_TAB => active_tab.set(Tab::Log),
+            _ => {}
+        });
+    }
+
+    let selected_key = state.read().selected_key().map(|s| s.to_string());
+    let selected_entry = state.read().selected_entry().cloned();
+    let query = state.read().query().to_string();
+
+    let filtered = state.read().filtered_entries().to_vec();
+    let window = virtual_window(
+        filtered.len(),
+        item_height,
+        *viewport_height.read(),
+        *scroll_offset.read(),
+        overscan,
+    );
+    let rows = filtered
+        .iter()
+        .skip(window.start)
+        .take(window.len())
+        .map(|entry| {
+            let (edid, record_id, ld) = row_fields(&entry.key, &entry.target_text);
+            RowView {
                 key: entry.key.clone(),
                 source_text: entry.source_text.clone(),
                 target_text: entry.target_text.clone(),
-                is_selected: selected_key.as_deref() == Some(entry.key.as_str()),
-            })
-            .collect::<Vec<_>>();
-        let selected_entry = state.selected_entry().cloned();
-        let query = state.query().to_string();
-        (
-            window,
-            entries,
-            selected_key,
-            selected_entry,
-            query,
-            total,
-            translated_count,
-            strings_count,
-            dlstrings_count,
-            ilstrings_count,
-        )
-    };
+                edid,
+                record_id,
+                ld,
+                selected: selected_key.as_deref() == Some(entry.key.as_str()),
+            }
+        })
+        .collect::<Vec<_>>();
 
-    let translation_ratio = if total_count == 0 {
+    let counts = count_channels(&filtered);
+    let ratio = if counts.total == 0 {
         0.0f32
     } else {
-        (translated_count as f32 / total_count as f32) * 100.0
+        (counts.translated as f32 / counts.total as f32) * 100.0
     };
 
     rsx! {
@@ -161,146 +305,22 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
 
         div { id: "app-shell",
-            div { class: "menu-bar",
-                button {
-                    class: "menu-item",
-                    onclick: move |_| {
-                        let xml = export_entries(state.read().entries());
-                        xml_text.set(xml);
-                        xml_error.set(None);
-                        file_status.set("XML exported to editor.".to_string());
-                    },
-                    "XML書き出し"
-                }
-                button {
-                    class: "menu-item",
-                    onclick: move |_| {
-                        match import_entries(&xml_text()) {
-                            Ok(imported) => {
-                                let (merged, stats) = apply_xml_default(state.read().entries(), &imported);
-                                if stats.updated == 0 {
-                                    file_status.set(format!(
-                                        "XML import(default): updated=0 unchanged={} missing={}",
-                                        stats.unchanged, stats.missing
-                                    ));
-                                    return;
-                                }
-                                history.write().apply(merged.clone());
-                                state.write().set_entries(merged);
-                                xml_error.set(None);
-                                file_status.set(format!(
-                                    "XML import(default): updated={} unchanged={} missing={}",
-                                    stats.updated, stats.unchanged, stats.missing
-                                ));
-                            }
-                            Err(err) => {
-                                xml_error.set(Some(format!("Import error: {err:?}")));
-                            }
-                        }
-                    },
-                    "XML一括適用"
-                }
-                button {
-                    class: "menu-item",
-                    onclick: move |_| {
-                        match save_overwrite(
-                            state.read().entries(),
-                            loaded_strings(),
-                            loaded_strings_kind(),
-                            loaded_strings_path(),
-                            loaded_plugin(),
-                            loaded_plugin_path(),
-                            loaded_esp_strings(),
-                        ) {
-                            Ok(path) => file_status.set(format!("Saved: {}", path.display())),
-                            Err(err) => file_status.set(format!("Save failed: {err}")),
-                        }
-                    },
-                    "上書き保存"
-                }
-                button {
-                    class: "menu-item",
-                    onclick: move |_| {
-                        match save_as_translated(
-                            state.read().entries(),
-                            loaded_strings(),
-                            loaded_strings_kind(),
-                            loaded_strings_path(),
-                            loaded_plugin(),
-                            loaded_plugin_path(),
-                            loaded_esp_strings(),
-                        ) {
-                            Ok(path) => file_status.set(format!("Saved as: {}", path.display())),
-                            Err(err) => file_status.set(format!("Save as failed: {err}")),
-                        }
-                    },
-                    "別名保存"
-                }
-                button {
-                    class: "menu-item",
-                    onclick: move |_| {
-                        let root = PathBuf::from(dict_root());
-                        match TranslationDictionary::build_from_strings_dir(
-                            &root,
-                            &dict_source_lang(),
-                            &dict_target_lang(),
-                        ) {
-                            Ok((built, stats)) => {
-                                let size = built.len();
-                                dictionary.set(Some(built));
-                                dictionary_status.set(format!(
-                                    "dict: pairs={} files_seen={} file_pairs={}",
-                                    size, stats.files_seen, stats.file_pairs
-                                ));
-                            }
-                            Err(err) => {
-                                dictionary_status.set(format!("dict build failed: {err}"));
-                            }
-                        }
-                    },
-                    "辞書構築"
-                }
-                button {
-                    class: "menu-item",
-                    onclick: move |_| {
-                        let Some(dict) = dictionary() else {
-                            dictionary_status.set("dict not built".to_string());
-                            return;
-                        };
-                        let selected = state
-                            .read()
-                            .selected_key()
-                            .map(|s| s.to_string())
-                            .into_iter()
-                            .collect::<Vec<_>>();
-                        let (next, updated) =
-                            dict.apply_quick(state.read().entries(), &selected, true);
-                        if updated == 0 {
-                            dictionary_status.set("quick auto-translate: no updates".to_string());
-                            return;
-                        }
-                        history.write().apply(next.clone());
-                        state.write().set_entries(next);
-                        dictionary_status
-                            .set(format!("quick auto-translate: {updated} updated"));
-                    },
-                    "Quick自動翻訳"
-                }
-                button { class: "menu-item", "オプション(Z)" }
-                button { class: "menu-item", "ツール(Y)" }
-            }
-            div { class: "tool-bar",
+            div { class: "toolbar",
+                button { class: "tool-ic", "F" }
+                button { class: "tool-ic", "T" }
+                button { class: "tool-ic", "O" }
+                button { class: "tool-ic", "Y" }
                 input {
                     id: "search",
-                    placeholder: "原文/訳文を検索...",
                     value: "{query}",
-                    oninput: move |event| {
-                        state.write().set_query(&event.value());
+                    placeholder: "原文/訳文/ID検索...",
+                    oninput: move |e| {
+                        state.write().set_query(&e.value());
                         scroll_offset.set(0.0);
                     },
                 }
                 button {
-                    class: "tool-button",
+                    class: "tool-btn",
                     onclick: move |_| {
                         let Some(entry) = state.read().selected_entry().cloned() else {
                             validation_issues.set(Vec::new());
@@ -315,206 +335,132 @@ fn App() -> Element {
                     "Validate"
                 }
                 button {
-                    class: "tool-button",
+                    class: "tool-btn",
                     onclick: move |_| {
                         let Some(entry) = state.read().selected_entry().cloned() else {
                             diff_status.set(None);
                             return;
                         };
-                        let mut diff_entry = DiffEntry::new(&entry.key, &entry.source_text, &entry.target_text);
-                        update_source(&mut diff_entry, &edit_source());
-                        diff_status.set(Some(diff_entry.status));
+                        let mut d = DiffEntry::new(&entry.key, &entry.source_text, &entry.target_text);
+                        update_source(&mut d, &edit_source());
+                        diff_status.set(Some(d.status));
                     },
                     "Diff"
                 }
                 button {
-                    class: "tool-button",
+                    class: "tool-btn",
                     onclick: move |_| {
-                        let result = match encode(&edit_target(), Encoding::Latin1)
+                        let msg = match encode(&edit_target(), Encoding::Latin1)
                             .and_then(|bytes| decode(&bytes, Encoding::Latin1)) {
-                            Ok(text) => format!("Latin1 OK: {text}"),
+                            Ok(_) => "Latin1 OK".to_string(),
                             Err(EncodingError::UnrepresentableChar) => "Latin1 error: unrepresentable".to_string(),
                             Err(EncodingError::InvalidUtf8) => "Latin1 error: invalid utf8".to_string(),
                         };
-                        encoding_status.set(result);
+                        encoding_status.set(msg);
                     },
                     "Encoding"
                 }
-                button {
-                    class: "tool-button",
-                    onclick: move |_| {
-                        if history.write().undo() {
-                            let entries = history.read().present().clone();
-                            state.write().set_entries(entries);
-                        }
-                    },
-                    "Undo"
-                }
-                button {
-                    class: "tool-button",
-                    onclick: move |_| {
-                        if history.write().redo() {
-                            let entries = history.read().present().clone();
-                            state.write().set_entries(entries);
-                        }
-                    },
-                    "Redo"
-                }
             }
-            div { class: "channel-bar",
-                div { class: "channel-box",
-                    div { class: "channel-title", "STRINGS [{translated_count}/{strings_count}]" }
-                    div { class: "channel-meter",
-                        div { class: "channel-fill", style: "width: {translation_ratio}%" }
-                    }
-                }
-                div { class: "channel-box",
-                    div { class: "channel-title", "DLSTRINGS [0/{dlstrings_count}]" }
-                    div { class: "channel-meter",
-                        div { class: "channel-fill dl", style: "width: 0%" }
-                    }
-                }
-                div { class: "channel-box",
-                    div { class: "channel-title", "ILSTRINGS [0/{ilstrings_count}]" }
-                    div { class: "channel-meter",
-                        div { class: "channel-fill il", style: "width: 0%" }
-                    }
-                }
+
+            div { class: "channels",
+                ChannelBox { label: format!("STRINGS [{}/{}]", counts.translated, counts.strings), ratio: ratio, color: "#dc4a4a" }
+                ChannelBox { label: format!("DLSTRINGS [0/{}]", counts.dlstrings), ratio: 0.0, color: "#557fd9" }
+                ChannelBox { label: format!("ILSTRINGS [0/{}]", counts.ilstrings), ratio: 0.0, color: "#76a65d" }
             }
-            div { class: "grid-root",
-                div { class: "grid-header",
-                    span { class: "col-edid", "EDID" }
-                    span { class: "col-id", "ID" }
-                    span { class: "col-src", "原文" }
-                    span { class: "col-dst", "訳文" }
-                    span { class: "col-ld", "LD" }
+
+            div { class: "grid-wrap",
+                div { class: "grid-head",
+                    span { class: "c-edid", "EDID" }
+                    span { class: "c-id", "ID" }
+                    span { class: "c-src", "原文" }
+                    span { class: "c-dst", "訳文" }
+                    span { class: "c-ld", "LD" }
                 }
-                div { class: "grid-body",
-                    onscroll: move |event| {
-                        let data = &event.data;
-                        let offset = (data.scroll_top() as f32 - list_padding).max(0.0);
-                        scroll_offset.set(offset);
+                div {
+                    class: "grid-body",
+                    onscroll: move |ev| {
+                        let data = &ev.data;
+                        scroll_offset.set(data.scroll_top() as f32);
                         viewport_height.set(data.client_height() as f32);
                     },
                     Spacer { window: window, position: SpacerPosition::Top }
-                    for EntryView { key, source_text, target_text, is_selected } in entries {
-                        {
-                            let (edid, rec_id, ld) = row_fields(&key, &target_text);
-                            rsx! {
-                                button {
-                                    class: if is_selected { "grid-row selected" } else { "grid-row" },
-                                    onclick: move |_| {
-                                        state.write().select(&key);
-                                        edit_source.set(source_text.clone());
-                                        edit_target.set(target_text.clone());
-                                    },
-                                    span { class: "col-edid", "{edid}" }
-                                    span { class: "col-id", "{rec_id}" }
-                                    span { class: "col-src", "{source_text}" }
-                                    span { class: "col-dst", "{target_text}" }
-                                    span { class: "col-ld", "{ld}" }
-                                }
-                            }
+                    for row in rows {
+                        button {
+                            class: if row.selected { "grid-row sel" } else { "grid-row" },
+                            onclick: move |_| {
+                                state.write().select(&row.key);
+                                edit_source.set(row.source_text.clone());
+                                edit_target.set(row.target_text.clone());
+                            },
+                            span { class: "c-edid", "{row.edid}" }
+                            span { class: "c-id", "{row.record_id}" }
+                            span { class: "c-src", "{row.source_text}" }
+                            span { class: "c-dst", "{row.target_text}" }
+                            span { class: "c-ld", "{row.ld}" }
                         }
                     }
                     Spacer { window: window, position: SpacerPosition::Bottom }
                 }
             }
-            div { class: "work-tabs",
-                for (id, label) in [
-                    ("home", "ホーム"),
-                    ("heuristic", "ヒューリスティック候補"),
-                    ("lang", "言語"),
-                    ("esp", "Espツリー"),
-                    ("pex", "Pex解析"),
-                    ("quest", "クエスト一覧"),
-                    ("npc", "NPC/音声リンク"),
-                    ("log", "ログ"),
-                ] {
+
+            div { class: "tabs",
+                for (tab, label) in Tab::all() {
                     button {
-                        class: if active_tab() == id { "tab-item active" } else { "tab-item" },
-                        onclick: move |_| active_tab.set(id.to_string()),
+                        class: if active_tab() == tab { "tab active" } else { "tab" },
+                        onclick: move |_| active_tab.set(tab),
                         "{label}"
                     }
                 }
             }
-            div { class: "info-pane",
-                if active_tab() == "home" {
+
+            div { class: "panel",
+                if active_tab() == Tab::Home {
                     if let Some(entry) = selected_entry {
-                        div { class: "editor-box",
-                            p { class: "editor-key", "Key: {entry.key}" }
+                        div { class: "editor",
+                            p { class: "k", "Key: {entry.key}" }
                             label { "原文" }
                             textarea {
-                                class: "detail-textarea",
+                                class: "txt",
                                 value: "{edit_source}",
-                                oninput: move |event| edit_source.set(event.value()),
+                                oninput: move |e| edit_source.set(e.value()),
                             }
                             label { "訳文" }
                             textarea {
-                                class: "detail-textarea",
+                                class: "txt",
                                 value: "{edit_target}",
-                                oninput: move |event| edit_target.set(event.value()),
+                                oninput: move |e| edit_target.set(e.value()),
                             }
-                            div { class: "editor-actions",
+                            div { class: "actions",
                                 button {
-                                    class: "tool-button",
+                                    class: "tool-btn",
                                     disabled: selected_key.is_none(),
                                     onclick: move |_| {
                                         let Some(key) = state.read().selected_key().map(|s| s.to_string()) else { return; };
-                                        let updated = {
-                                            let mut state = state.write();
-                                            if state.update_entry(&key, &edit_source(), &edit_target()) {
-                                                Some(state.entries().to_vec())
+                                        let next = {
+                                            let mut s = state.write();
+                                            if s.update_entry(&key, &edit_source(), &edit_target()) {
+                                                Some(s.entries().to_vec())
                                             } else {
                                                 None
                                             }
                                         };
-                                        if let Some(entries) = updated {
+                                        if let Some(entries) = next {
                                             history.write().apply(entries);
                                         }
                                     },
                                     "Apply Edit"
                                 }
                                 button {
-                                    class: "tool-button",
+                                    class: "tool-btn",
                                     onclick: move |_| {
-                                        let xml = export_entries(state.read().entries());
-                                        xml_text.set(xml);
-                                        xml_error.set(None);
-                                    },
-                                    "Export XML"
-                                }
-                                button {
-                                    class: "tool-button",
-                                    onclick: move |_| {
-                                        match import_entries(&xml_text()) {
-                                            Ok(entries) => {
-                                                history.write().apply(entries.clone());
-                                                state.write().set_entries(entries);
-                                                xml_error.set(None);
-                                                file_status.set("XML imported.".to_string());
-                                            }
-                                            Err(err) => {
-                                                xml_error.set(Some(format!("Import error: {err:?}")));
-                                            }
-                                        }
-                                    },
-                                    "Import XML"
-                                }
-                                button {
-                                    class: "tool-button",
-                                    onclick: move |_| {
-                                        let plugin = loaded_plugin().clone();
-                                        let strings = loaded_strings().clone();
-                                        match (plugin, strings) {
+                                        let p = loaded_plugin().clone();
+                                        let s = loaded_strings().clone();
+                                        match (p, s) {
                                             (Some(plugin), Some(strings)) => {
-                                                let hybrid = build_hybrid_entries(&plugin, &strings);
-                                                hybrid_preview.set(hybrid);
+                                                hybrid_preview.set(build_hybrid_entries(&plugin, &strings));
                                                 hybrid_error.set(None);
                                             }
-                                            _ => {
-                                                hybrid_error.set(Some("Load plugin and strings first.".to_string()));
-                                            }
+                                            _ => hybrid_error.set(Some("Plugin/Stringsを先に読み込んでください".to_string())),
                                         }
                                     },
                                     "Build Hybrid"
@@ -522,207 +468,231 @@ fn App() -> Element {
                             }
                         }
                     } else {
-                        p { "Select an entry from the grid." }
+                        p { "行を選択してください。" }
                     }
-                } else if active_tab() == "log" {
-                    div { class: "log-box",
-                        if !file_status().is_empty() {
-                            p { "{file_status}" }
-                        }
-                        if let Some(err) = xml_error() {
-                            p { class: "tool-error", "{err}" }
-                        }
-                        if let Some(status) = diff_status() {
-                            p { "Diff status: {status:?}" }
-                        }
-                        if !encoding_status().is_empty() {
-                            p { "{encoding_status}" }
-                        }
+                } else if active_tab() == Tab::Log {
+                    div { class: "log",
+                        if !file_status().is_empty() { p { "{file_status}" } }
+                        if !dict_status().is_empty() { p { "{dict_status}" } }
+                        if let Some(err) = xml_error() { p { class: "err", "{err}" } }
+                        if let Some(err) = hybrid_error() { p { class: "err", "{err}" } }
+                        if let Some(status) = diff_status() { p { "Diff status: {status:?}" } }
+                        if !encoding_status().is_empty() { p { "{encoding_status}" } }
                         if !validation_issues().is_empty() {
                             for issue in validation_issues() {
                                 p { "{issue.rule_id}: {issue.message}" }
                             }
                         }
-                        if let Some(err) = hybrid_error() {
-                            p { class: "tool-error", "{err}" }
-                        }
                     }
                 } else {
                     p { "このタブは次フェーズで実装します。" }
                 }
-                div { class: "loader-row",
-                    label { class: "loader-item",
+
+                div { class: "io-row",
+                    label { class: "io",
                         "Load XML"
                         input {
                             r#type: "file",
                             accept: ".xml",
                             onchange: move |event| async move {
-                                let Some(file) = event.files().into_iter().next() else {
-                                    return;
-                                };
+                                let Some(file) = event.files().into_iter().next() else { return; };
                                 match file.read_string().await {
                                     Ok(contents) => {
                                         xml_text.set(contents);
                                         xml_error.set(None);
-                                        file_status.set("XML loaded.".to_string());
+                                        file_status.set("XMLを読み込みました".to_string());
                                     }
                                     Err(err) => file_status.set(format!("XML read error: {err}")),
                                 }
                             },
                         }
                     }
-                    label { class: "loader-item",
+                    label { class: "io",
                         "Load Strings"
                         input {
                             r#type: "file",
                             accept: ".strings,.dlstrings,.ilstrings",
                             onchange: move |event| async move {
-                                let Some(file) = event.files().into_iter().next() else {
-                                    return;
-                                };
+                                let Some(file) = event.files().into_iter().next() else { return; };
                                 let path = file.path();
                                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                                match file.read_bytes().await {
-                                    Ok(bytes) => {
-                                        let parsed = match ext.to_ascii_lowercase().as_str() {
-                                            "strings" => read_strings(&bytes),
-                                            "dlstrings" => read_dlstrings(&bytes),
-                                            "ilstrings" => read_ilstrings(&bytes),
-                                            _ => Err(xt_core::formats::strings::StringsError::InvalidHeader),
-                                        };
-                                        match parsed {
-                                            Ok(strings) => {
-                                                let entries = strings_to_entries(&strings);
-                                                history.write().apply(entries.clone());
-                                                state.write().set_entries(entries);
-                                                loaded_strings.set(Some(strings));
-                                                loaded_strings_path.set(Some(path.clone()));
-                                                loaded_strings_kind.set(Some(StringsKind::from_extension(ext)));
-                                                file_status.set("Strings loaded.".to_string());
-                                            }
-                                            Err(err) => file_status.set(format!("Strings parse error: {err:?}")),
-                                        }
+                                let Some(kind) = StringsKind::from_extension(ext) else {
+                                    file_status.set(format!("unsupported strings extension: {ext}"));
+                                    return;
+                                };
+                                let bytes = match file.read_bytes().await {
+                                    Ok(v) => v,
+                                    Err(err) => {
+                                        file_status.set(format!("Strings read error: {err}"));
+                                        return;
                                     }
-                                    Err(err) => file_status.set(format!("Strings read error: {err}")),
+                                };
+                                let parsed = match kind {
+                                    StringsKind::Strings => read_strings(&bytes),
+                                    StringsKind::DlStrings => read_dlstrings(&bytes),
+                                    StringsKind::IlStrings => read_ilstrings(&bytes),
+                                };
+                                match parsed {
+                                    Ok(strings) => {
+                                        let entries = strings
+                                            .entries
+                                            .iter()
+                                            .map(|e| Entry {
+                                                key: format!("strings:{}", e.id),
+                                                source_text: e.text.clone(),
+                                                target_text: String::new(),
+                                            })
+                                            .collect::<Vec<_>>();
+                                        history.write().apply(entries.clone());
+                                        state.write().set_entries(entries);
+                                        loaded_strings.set(Some(strings));
+                                        loaded_strings_kind.set(Some(kind));
+                                        loaded_strings_path.set(Some(path));
+                                        loaded_plugin.set(None);
+                                        loaded_plugin_path.set(None);
+                                        loaded_esp_strings.set(None);
+                                        file_status.set("Stringsを読み込みました".to_string());
+                                    }
+                                    Err(err) => file_status.set(format!("Strings parse error: {err:?}")),
                                 }
                             },
                         }
                     }
-                    label { class: "loader-item",
+                    label { class: "io",
                         "Load Plugin"
                         input {
                             r#type: "file",
                             accept: ".esp,.esm,.esl,.xtplugin",
                             onchange: move |event| async move {
-                                let Some(file) = event.files().into_iter().next() else {
-                                    return;
-                                };
+                                let Some(file) = event.files().into_iter().next() else { return; };
                                 let path = file.path();
-                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                                if ext.eq_ignore_ascii_case("xtplugin") {
+                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                                if ext == "xtplugin" {
                                     match file.read_string().await {
-                                        Ok(contents) => match read_plugin(&contents) {
+                                        Ok(content) => match read_plugin(&content) {
                                             Ok(plugin) => {
+                                                let entries = plugin
+                                                    .entries
+                                                    .iter()
+                                                    .map(|e| Entry {
+                                                        key: format!("plugin:{}", e.id),
+                                                        source_text: e.source_text.clone(),
+                                                        target_text: String::new(),
+                                                    })
+                                                    .collect::<Vec<_>>();
+                                                history.write().apply(entries.clone());
+                                                state.write().set_entries(entries);
                                                 loaded_plugin.set(Some(plugin));
-                                                loaded_plugin_path.set(Some(path.clone()));
+                                                loaded_plugin_path.set(Some(path));
                                                 loaded_esp_strings.set(None);
-                                                file_status.set("Plugin loaded (xtplugin).".to_string());
+                                                loaded_strings.set(None);
+                                                loaded_strings_kind.set(None);
+                                                loaded_strings_path.set(None);
+                                                file_status.set("xtpluginを読み込みました".to_string());
                                             }
-                                            Err(err) => file_status.set(format!("Plugin parse error: {err:?}")),
+                                            Err(err) => file_status.set(format!("xtplugin parse error: {err:?}")),
                                         },
-                                        Err(err) => file_status.set(format!("Plugin read error: {err}")),
+                                        Err(err) => file_status.set(format!("xtplugin read error: {err}")),
                                     }
                                 } else {
-                                    match file.read_bytes().await {
-                                        Ok(bytes) => {
-                                            let workspace_root = workspace_root_from_plugin(&path);
-                                            let entries = match extract_esp_strings(&path, &workspace_root, Some("english")) {
-                                                Ok(strings) => {
-                                                    loaded_esp_strings.set(Some(strings.clone()));
-                                                    loaded_plugin_path.set(Some(path.clone()));
-                                                    strings_to_entries_from_extracted(&strings)
-                                                }
-                                                Err(err) => {
-                                                    let fallback = extract_null_terminated_utf8(&bytes, 4)
-                                                        .into_iter()
-                                                        .map(|entry| Entry {
-                                                            key: format!("plugin:{:08x}", entry.offset),
-                                                            source_text: entry.text,
-                                                            target_text: String::new(),
-                                                        })
-                                                        .collect::<Vec<_>>();
-                                                    file_status.set(format!("ESP parse error (fallback to binary): {err}"));
-                                                    fallback
-                                                }
-                                            };
-                                            history.write().apply(entries.clone());
-                                            state.write().set_entries(entries);
-                                            loaded_plugin.set(None);
-                                            file_status.set("Plugin loaded.".to_string());
+                                    let bytes = match file.read_bytes().await {
+                                        Ok(v) => v,
+                                        Err(err) => {
+                                            file_status.set(format!("plugin read error: {err}"));
+                                            return;
                                         }
-                                        Err(err) => file_status.set(format!("Plugin read error: {err}")),
-                                    }
+                                    };
+                                    let workspace_root = workspace_root_from_plugin(&path);
+                                    let entries = match extract_esp_strings(&path, &workspace_root, Some("english")) {
+                                        Ok(strings) => {
+                                            loaded_esp_strings.set(Some(strings.clone()));
+                                            strings
+                                                .iter()
+                                                .map(|s| Entry {
+                                                    key: s.get_unique_key(),
+                                                    source_text: s.text.clone(),
+                                                    target_text: String::new(),
+                                                })
+                                                .collect::<Vec<_>>()
+                                        }
+                                        Err(err) => {
+                                            file_status.set(format!("ESP parse error (fallback): {err}"));
+                                            extract_null_terminated_utf8(&bytes, 4)
+                                                .into_iter()
+                                                .map(|x| Entry {
+                                                    key: format!("plugin:{:08x}", x.offset),
+                                                    source_text: x.text,
+                                                    target_text: String::new(),
+                                                })
+                                                .collect::<Vec<_>>()
+                                        }
+                                    };
+                                    history.write().apply(entries.clone());
+                                    state.write().set_entries(entries);
+                                    loaded_plugin.set(None);
+                                    loaded_plugin_path.set(Some(path));
+                                    loaded_strings.set(None);
+                                    loaded_strings_kind.set(None);
+                                    loaded_strings_path.set(None);
+                                    file_status.set("Pluginを読み込みました".to_string());
                                 }
                             },
                         }
                     }
                 }
-                div { class: "loader-row",
-                    label { class: "loader-item",
+
+                div { class: "io-row",
+                    label { class: "io",
                         "Dict Src"
                         input {
                             value: "{dict_source_lang}",
                             oninput: move |e| dict_source_lang.set(e.value()),
                         }
                     }
-                    label { class: "loader-item",
+                    label { class: "io",
                         "Dict Dst"
                         input {
                             value: "{dict_target_lang}",
                             oninput: move |e| dict_target_lang.set(e.value()),
                         }
                     }
-                    label { class: "loader-item dict-root",
+                    label { class: "io io-wide",
                         "Dict Root"
                         input {
                             value: "{dict_root}",
                             oninput: move |e| dict_root.set(e.value()),
                         }
                     }
-                    if !dictionary_status().is_empty() {
-                        p { class: "status-inline", "{dictionary_status}" }
+                    if !dict_status().is_empty() {
+                        p { class: "inline", "{dict_status}" }
                     }
                 }
+
                 textarea {
-                    class: "xml-textarea",
+                    class: "xml",
                     value: "{xml_text}",
-                    oninput: move |event| xml_text.set(event.value()),
+                    oninput: move |e| xml_text.set(e.value()),
                 }
             }
-            div { class: "status-bar",
-                div { class: "status-progress",
-                    div { class: "status-progress-fill", style: "width: {translation_ratio}%" }
-                }
-                div { class: "status-text", "[{dict_source_lang}] -> [{dict_target_lang}]" }
-                div { class: "status-text", "{file_status}" }
-                div { class: "status-text", "{translated_count}/{total_count}" }
+
+            div { class: "status",
+                div { class: "meter", div { class: "meter-fill", style: "width: {ratio}%" } }
+                div { class: "s", "[{dict_source_lang}] -> [{dict_target_lang}]" }
+                div { class: "s", "{file_status}" }
+                div { class: "s", "{counts.translated}/{counts.total}" }
             }
         }
     }
 }
 
-#[derive(Clone)]
-struct EntryView {
-    key: String,
-    source_text: String,
-    target_text: String,
-    is_selected: bool,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum SpacerPosition {
-    Top,
-    Bottom,
+#[component]
+fn ChannelBox(label: String, ratio: f32, color: &'static str) -> Element {
+    rsx! {
+        div { class: "ch",
+            div { class: "t", "{label}" }
+            div { class: "bar", div { class: "fill", style: "width: {ratio}%; background: {color};" } }
+        }
+    }
 }
 
 #[component]
@@ -731,9 +701,91 @@ fn Spacer(window: VirtualWindow, position: SpacerPosition) -> Element {
         SpacerPosition::Top => window.top_pad,
         SpacerPosition::Bottom => window.bottom_pad,
     };
-    rsx! {
-        div { class: "spacer", style: "height: {height}px;" }
+    rsx! { div { class: "spacer", style: "height: {height}px;" } }
+}
+
+#[derive(Default)]
+struct ChannelCounts {
+    total: usize,
+    translated: usize,
+    strings: usize,
+    dlstrings: usize,
+    ilstrings: usize,
+}
+
+fn count_channels(entries: &[Entry]) -> ChannelCounts {
+    let mut c = ChannelCounts::default();
+    for entry in entries {
+        c.total += 1;
+        if !entry.target_text.is_empty() {
+            c.translated += 1;
+        }
+        let key = entry.key.to_ascii_lowercase();
+        if key.contains("dlstrings") {
+            c.dlstrings += 1;
+        } else if key.contains("ilstrings") {
+            c.ilstrings += 1;
+        } else {
+            c.strings += 1;
+        }
     }
+    c
+}
+
+fn row_fields(key: &str, target_text: &str) -> (String, String, String) {
+    let edid = key.split(':').next_back().unwrap_or(key).to_string();
+    let record_id = if key.to_ascii_lowercase().contains("plugin") {
+        "REC FULL".to_string()
+    } else {
+        "WEAP FULL".to_string()
+    };
+    let ld = if target_text.is_empty() { "-" } else { "T" }.to_string();
+    (edid, record_id, ld)
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn build_native_menu() -> dioxus::desktop::muda::Menu {
+    use dioxus::desktop::muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let menu = Menu::new();
+
+    let file_menu = Submenu::new("ファイル(F)", true);
+    let xml_export = MenuItem::with_id(MENU_XML_EXPORT, "翻訳XMLを書き出し", true, None);
+    let xml_apply = MenuItem::with_id(MENU_XML_APPLY, "翻訳XMLを一括適用", true, None);
+    let save = MenuItem::with_id(MENU_SAVE_OVERWRITE, "上書き保存", true, None);
+    let save_as = MenuItem::with_id(MENU_SAVE_AS, "別名保存", true, None);
+    let sep_file_1 = PredefinedMenuItem::separator();
+    let sep_file_2 = PredefinedMenuItem::separator();
+    let quit = PredefinedMenuItem::quit(None);
+    let _ = file_menu.append_items(&[
+        &xml_export,
+        &xml_apply,
+        &sep_file_1,
+        &save,
+        &save_as,
+        &sep_file_2,
+        &quit,
+    ]);
+
+    let translate_menu = Submenu::new("翻訳(T)", true);
+    let dict_build = MenuItem::with_id(MENU_DICT_BUILD, "辞書を構築", true, None);
+    let quick_auto = MenuItem::with_id(MENU_QUICK_AUTO, "Quick自動翻訳", true, None);
+    let _ = translate_menu.append_items(&[&dict_build, &quick_auto]);
+
+    let options_menu = Submenu::new("オプション(Z)", true);
+    let lang_panel = MenuItem::with_id(MENU_LANG_PANEL, "言語と辞書を開く", true, None);
+    let lang_reset = MenuItem::with_id(MENU_LANG_RESET, "言語ペアを既定に戻す", true, None);
+    let _ = options_menu.append_items(&[&lang_panel, &lang_reset]);
+
+    let tools_menu = Submenu::new("ツール(Y)", true);
+    let undo = MenuItem::with_id(MENU_UNDO, "Undo", true, None);
+    let redo = MenuItem::with_id(MENU_REDO, "Redo", true, None);
+    let sep_tools = PredefinedMenuItem::separator();
+    let log_tab = MenuItem::with_id(MENU_LOG_TAB, "ログタブを開く", true, None);
+    let _ = tools_menu.append_items(&[&undo, &redo, &sep_tools, &log_tab]);
+
+    let _ = menu.append_items(&[&file_menu, &translate_menu, &options_menu, &tools_menu]);
+    menu
 }
 
 fn sample_entries() -> Vec<Entry> {
@@ -746,61 +798,6 @@ fn sample_entries() -> Vec<Entry> {
         });
     }
     entries
-}
-
-fn strings_to_entries(strings: &StringsFile) -> Vec<Entry> {
-    strings
-        .entries
-        .iter()
-        .map(|entry| Entry {
-            key: format!("strings:{}", entry.id),
-            source_text: entry.text.clone(),
-            target_text: String::new(),
-        })
-        .collect()
-}
-
-fn strings_to_entries_from_extracted(strings: &[ExtractedString]) -> Vec<Entry> {
-    strings
-        .iter()
-        .map(|entry| Entry {
-            key: entry.get_unique_key(),
-            source_text: entry.text.clone(),
-            target_text: String::new(),
-        })
-        .collect()
-}
-
-fn workspace_root_from_plugin(path: &std::path::Path) -> PathBuf {
-    let Some(parent) = path.parent() else {
-        return PathBuf::from(".");
-    };
-    let is_data_dir = parent
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.eq_ignore_ascii_case("Data"))
-        .unwrap_or(false);
-    if is_data_dir {
-        if let Some(root) = parent.parent() {
-            return root.to_path_buf();
-        }
-    }
-    parent.to_path_buf()
-}
-
-fn row_fields(key: &str, target_text: &str) -> (String, String, String) {
-    let edid = key
-        .split(':')
-        .next_back()
-        .unwrap_or(key)
-        .to_string();
-    let rec_id = if key.to_ascii_lowercase().contains("plugin") {
-        "REC FULL".to_string()
-    } else {
-        "WEAP FULL".to_string()
-    };
-    let ld = if target_text.is_empty() { "-" } else { "T" }.to_string();
-    (edid, rec_id, ld)
 }
 
 fn save_overwrite(
@@ -819,7 +816,8 @@ fn save_overwrite(
         if let Some(plugin) = loaded_plugin {
             ensure_backup(&plugin_path)?;
             let encoded = write_plugin(&plugin).map_err(|e| format!("{e:?}"))?;
-            std::fs::write(&plugin_path, encoded).map_err(|e| e.to_string())?;
+            std::fs::write(&plugin_path, encoded)
+                .map_err(|e| format!("plugin save {}: {e}", plugin_path.display()))?;
             return Ok(plugin_path);
         }
     }
@@ -829,10 +827,11 @@ fn save_overwrite(
     {
         return save_strings(entries, &strings, kind, &path);
     }
-    Err("no loaded file to save".to_string())
+
+    Err("保存対象がありません".to_string())
 }
 
-fn save_as_translated(
+fn save_as(
     entries: &[Entry],
     loaded_strings: Option<StringsFile>,
     loaded_strings_kind: Option<StringsKind>,
@@ -843,35 +842,28 @@ fn save_as_translated(
 ) -> Result<PathBuf, String> {
     if let Some(plugin_path) = loaded_plugin_path {
         if let Some(extracted) = loaded_esp_strings {
-            let out_dir = plugin_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("translated_output");
-            return save_esp(entries, &plugin_path, &out_dir.join(file_name_or_default(&plugin_path)), extracted);
+            let out = with_suffix_path(&plugin_path, "_translated");
+            return save_esp(entries, &plugin_path, &out, extracted);
         }
         if let Some(plugin) = loaded_plugin {
-            let out_path = with_suffix_path(&plugin_path, "_translated");
+            let out = with_suffix_path(&plugin_path, "_translated");
             let encoded = write_plugin(&plugin).map_err(|e| format!("{e:?}"))?;
-            std::fs::write(&out_path, encoded).map_err(|e| e.to_string())?;
-            return Ok(out_path);
+            std::fs::write(&out, encoded).map_err(|e| format!("plugin save {}: {e}", out.display()))?;
+            return Ok(out);
         }
     }
 
     if let (Some(strings), Some(kind), Some(path)) =
         (loaded_strings, loaded_strings_kind, loaded_strings_path)
     {
-        let out_path = with_suffix_path(&path, "_translated");
-        return save_strings(entries, &strings, kind, &out_path);
+        let out = with_suffix_path(&path, "_translated");
+        return save_strings(entries, &strings, kind, &out);
     }
-    Err("no loaded file to save".to_string())
+
+    Err("保存対象がありません".to_string())
 }
 
-fn save_strings(
-    entries: &[Entry],
-    base: &StringsFile,
-    kind: StringsKind,
-    path: &Path,
-) -> Result<PathBuf, String> {
+fn save_strings(entries: &[Entry], base: &StringsFile, kind: StringsKind, path: &Path) -> Result<PathBuf, String> {
     if path.exists() {
         ensure_backup(path)?;
     }
@@ -882,50 +874,42 @@ fn save_strings(
         StringsKind::IlStrings => write_ilstrings(&updated),
     }
     .map_err(|e| format!("{e:?}"))?;
-    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    std::fs::write(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path.to_path_buf())
 }
 
-fn save_esp(
-    entries: &[Entry],
-    input_path: &Path,
-    output_path: &Path,
-    extracted: Vec<ExtractedString>,
-) -> Result<PathBuf, String> {
-    if input_path.exists() && input_path == output_path {
+fn save_esp(entries: &[Entry], input_path: &Path, output_path: &Path, extracted: Vec<ExtractedString>) -> Result<PathBuf, String> {
+    if input_path == output_path && input_path.exists() {
         ensure_backup(input_path)?;
     }
+
     let mut targets: HashMap<&str, &str> = HashMap::new();
     for entry in entries {
         if !entry.target_text.is_empty() {
             targets.insert(entry.key.as_str(), entry.target_text.as_str());
         }
     }
+
     let mut translated = extracted;
     for item in &mut translated {
-        if let Some(target) = targets.get(item.get_unique_key().as_str()) {
+        let key = item.get_unique_key();
+        if let Some(target) = targets.get(key.as_str()) {
             item.text = (*target).to_string();
         }
     }
-    let output_dir = output_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
+
+    let out_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
     let workspace_root = workspace_root_from_plugin(input_path);
-    let written = apply_translations(
-        input_path,
-        &workspace_root,
-        &output_dir,
-        translated,
-        Some("english"),
-    )
-    .map_err(|e| format!("esp write failed ({}): {e}", input_path.display()))?;
+    let written = apply_translations(input_path, &workspace_root, out_dir, translated, Some("english"))
+        .map_err(|e| format!("esp apply failed {}: {e}", input_path.display()))?;
+
     if written == output_path {
         return Ok(written);
     }
+
     std::fs::copy(&written, output_path).map_err(|e| {
         format!(
-            "esp rename failed ({} -> {}): {e}",
+            "copy {} -> {} failed: {e}",
             written.display(),
             output_path.display()
         )
@@ -942,12 +926,12 @@ fn apply_entries_to_strings(base: &StringsFile, entries: &[Entry]) -> StringsFil
             }
         }
     }
-    let updated = base
+    let out = base
         .entries
         .iter()
         .map(|entry| {
             if let Some(target) = by_id.get(&entry.id) {
-                xt_core::formats::strings::StringsEntry {
+                StringsEntry {
                     id: entry.id,
                     text: (*target).to_string(),
                 }
@@ -956,7 +940,7 @@ fn apply_entries_to_strings(base: &StringsFile, entries: &[Entry]) -> StringsFil
             }
         })
         .collect::<Vec<_>>();
-    StringsFile { entries: updated }
+    StringsFile { entries: out }
 }
 
 fn parse_strings_id(key: &str) -> Option<u32> {
@@ -971,7 +955,7 @@ fn ensure_backup(path: &Path) -> Result<(), String> {
     let backup = next_backup_path(path);
     std::fs::copy(path, &backup).map_err(|e| {
         format!(
-            "backup failed ({} -> {}): {e}",
+            "backup failed {} -> {}: {e}",
             path.display(),
             backup.display()
         )
@@ -979,55 +963,63 @@ fn ensure_backup(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn with_suffix_path(path: &Path, suffix: &str) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let name = if ext.is_empty() {
-        format!("{stem}{suffix}")
-    } else {
-        format!("{stem}{suffix}.{ext}")
-    };
-    path.parent().unwrap_or_else(|| Path::new(".")).join(name)
-}
-
 fn next_backup_path(path: &Path) -> PathBuf {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    for index in 0usize..1000usize {
-        let name = if index == 0 {
+
+    for i in 0usize..1000usize {
+        let name = if i == 0 {
             if ext.is_empty() {
                 format!("{stem}.bak")
             } else {
                 format!("{stem}.bak.{ext}")
             }
         } else if ext.is_empty() {
-            format!("{stem}.bak{index}")
+            format!("{stem}.bak{i}")
         } else {
-            format!("{stem}.bak{index}.{ext}")
+            format!("{stem}.bak{i}.{ext}")
         };
-        let candidate = parent.join(name);
-        if !candidate.exists() {
-            return candidate;
+        let p = parent.join(name);
+        if !p.exists() {
+            return p;
         }
     }
+
     with_suffix_path(path, ".bak999")
 }
 
-fn file_name_or_default(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("plugin.esp")
-        .to_string()
+fn with_suffix_path(path: &Path, suffix: &str) -> PathBuf {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let file = if ext.is_empty() {
+        format!("{stem}{suffix}")
+    } else {
+        format!("{stem}{suffix}.{ext}")
+    };
+    path.parent().unwrap_or_else(|| Path::new(".")).join(file)
+}
+
+fn workspace_root_from_plugin(path: &Path) -> PathBuf {
+    let Some(parent) = path.parent() else {
+        return PathBuf::from(".");
+    };
+    let is_data_dir = parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("Data"))
+        .unwrap_or(false);
+    if is_data_dir {
+        if let Some(root) = parent.parent() {
+            return root.to_path_buf();
+        }
+    }
+    parent.to_path_buf()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xt_core::formats::strings::StringsEntry;
 
     #[test]
     fn t_app_001_apply_entries_to_strings_updates_target() {
