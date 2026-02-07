@@ -1,6 +1,7 @@
 pub mod formats;
 pub mod heuristics;
 pub mod import_export;
+pub mod dictionary;
 pub mod encoding;
 pub mod diff;
 pub mod model;

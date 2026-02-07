@@ -1,10 +1,18 @@
 use crate::model::Entry;
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum XmlError {
     InvalidFormat,
     MissingAttr(&'static str),
     InvalidEscape,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct XmlApplyStats {
+    pub updated: usize,
+    pub unchanged: usize,
+    pub missing: usize,
 }
 
 pub fn export_entries(entries: &[Entry]) -> String {
@@ -48,6 +56,35 @@ pub fn import_entries(xml: &str) -> Result<Vec<Entry>, XmlError> {
         rest = &rest[end + 2..];
     }
     Ok(entries)
+}
+
+pub fn apply_xml_default(current: &[Entry], imported: &[Entry]) -> (Vec<Entry>, XmlApplyStats) {
+    let mut import_map: HashMap<&str, &str> = HashMap::new();
+    for entry in imported {
+        if !entry.target_text.is_empty() {
+            import_map.insert(entry.key.as_str(), entry.target_text.as_str());
+        }
+    }
+    let mut stats = XmlApplyStats::default();
+    let merged = current
+        .iter()
+        .map(|entry| {
+            let mut next = entry.clone();
+            match import_map.get(entry.key.as_str()) {
+                Some(target) => {
+                    if next.target_text != *target {
+                        next.target_text = (*target).to_string();
+                        stats.updated += 1;
+                    } else {
+                        stats.unchanged += 1;
+                    }
+                }
+                None => stats.missing += 1,
+            }
+            next
+        })
+        .collect::<Vec<_>>();
+    (merged, stats)
 }
 
 fn parse_attr(tag: &str, name: &'static str) -> Result<String, XmlError> {
@@ -131,5 +168,43 @@ mod tests {
         let xml = export_entries(&entries);
         let parsed = import_entries(&xml).expect("import xml");
         assert_eq!(parsed, entries);
+    }
+
+    #[test]
+    fn t_xml_apply_001_default_profile_stats() {
+        let current = vec![
+            Entry {
+                key: "k1".to_string(),
+                source_text: "A".to_string(),
+                target_text: String::new(),
+            },
+            Entry {
+                key: "k2".to_string(),
+                source_text: "B".to_string(),
+                target_text: "X".to_string(),
+            },
+            Entry {
+                key: "k3".to_string(),
+                source_text: "C".to_string(),
+                target_text: String::new(),
+            },
+        ];
+        let imported = vec![
+            Entry {
+                key: "k1".to_string(),
+                source_text: "A".to_string(),
+                target_text: "AA".to_string(),
+            },
+            Entry {
+                key: "k2".to_string(),
+                source_text: "B".to_string(),
+                target_text: "X".to_string(),
+            },
+        ];
+        let (merged, stats) = apply_xml_default(&current, &imported);
+        assert_eq!(stats.updated, 1);
+        assert_eq!(stats.unchanged, 1);
+        assert_eq!(stats.missing, 1);
+        assert_eq!(merged[0].target_text, "AA");
     }
 }
