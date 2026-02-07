@@ -7,6 +7,8 @@
 - `spec/scope.md`
 - `spec/architecture.md`
 - `spec/esp-format.md`
+- `spec/ui-layout.md`
+- `spec/xtranslator-gap.md`
 - `spec/data-model.md`
 - `spec/requirements.md`
 - `spec/tests.md`

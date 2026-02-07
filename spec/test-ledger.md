@@ -24,6 +24,10 @@
 - [x] **T-DIFF-001**: source変更でNeedsReviewが立つ（FR-DIFF-01）
 - [x] **T-VAL-ALIAS-001**: Aliasタグ整合チェック（FR-VAL-02）
 - [x] **T-ENC-001**: 代表エンコーディングのround-trip（FR-ENC-01）
+- [x] **T-XML-APPLY-001**: XML default profile適用で updated/unchanged/missing が正しい（FR-XML-02）
+- [x] **T-DICT-001**: 辞書Quick AutoTranslateは選択範囲のみ更新できる（FR-AUTO-03）
+- [x] **T-DICT-002**: Stringsディレクトリから辞書構築できる（FR-DICT-02）
+- [x] **T-BATCH-001**: `--load --importxml --finalize` 引数の解析が成立する（FR-BATCH-01）
 
 ## Phase 3（v2: Archive/PEX/音声）
 - [ ] **T-BA2-EXT-001**: ba2 fixture抽出→ハッシュ一致（FR-ARC-01）
