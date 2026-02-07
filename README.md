@@ -13,6 +13,50 @@ just build-app
 just serve
 ```
 
+## Batch Workflow (`xt_batch`)
+
+Run batch commands from repo root:
+
+```bash
+cargo run -p xt_app --bin xt_batch -- --load base.xml --importxml tr.xml --finalize out.xml
+```
+
+### Strings pipeline
+
+```bash
+cargo run -p xt_app --bin xt_batch -- \
+  --load-strings Data/Strings/mod_english.strings \
+  --importxml tr.xml \
+  --finalize Data/Strings/mod_japanese.strings
+```
+
+### Plugin pipeline (ESP/ESM/ESL)
+
+```bash
+cargo run -p xt_app --bin xt_batch -- \
+  --load-plugin Data/mod.esp \
+  --workspace-root /path/to/game \
+  --importxml tr.xml \
+  --finalize out/mod.esp
+```
+
+### Dictionary build/apply
+
+```bash
+# build
+cargo run -p xt_app --bin xt_batch -- \
+  --generate-dictionary Data/Strings/Translations \
+  --source english --target japanese \
+  --dict-out dict.tsv
+
+# apply
+cargo run -p xt_app --bin xt_batch -- \
+  --load base.xml \
+  --importxml tr.xml \
+  --dict-in dict.tsv \
+  --finalize out.xml
+```
+
 ```
 project/
 ├─ crates/
