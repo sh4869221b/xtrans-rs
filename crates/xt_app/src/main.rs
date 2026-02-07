@@ -28,6 +28,8 @@ const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
 const MENU_XML_EXPORT: &str = "file.xml_export";
 const MENU_XML_APPLY: &str = "file.xml_apply";
+const MENU_OPEN_PLUGIN: &str = "file.open_plugin";
+const MENU_OPEN_STRINGS: &str = "file.open_strings";
 const MENU_SAVE_OVERWRITE: &str = "file.save_overwrite";
 const MENU_SAVE_AS: &str = "file.save_as";
 const MENU_DICT_BUILD: &str = "translate.dict_build";
@@ -104,14 +106,20 @@ enum SpacerPosition {
 }
 
 fn main() {
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(all(
+        feature = "desktop",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     {
         use dioxus::desktop::Config;
         dioxus::LaunchBuilder::new()
             .with_cfg(Config::new().with_menu(build_native_menu()))
             .launch(App);
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    #[cfg(not(all(
+        feature = "desktop",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    )))]
     dioxus::launch(App);
 }
 
@@ -155,10 +163,23 @@ fn App() -> Element {
 
     let mut active_tab = use_signal(|| Tab::Home);
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(all(
+        feature = "desktop",
+        any(target_os = "windows", target_os = "linux", target_os = "macos")
+    ))]
     {
         use dioxus::desktop::use_muda_event_handler;
         use_muda_event_handler(move |event| match event.id.as_ref() {
+            MENU_OPEN_PLUGIN => {
+                document::eval(
+                    "const el = document.getElementById('plugin-picker-native'); if (el) { el.click(); }",
+                );
+            }
+            MENU_OPEN_STRINGS => {
+                document::eval(
+                    "const el = document.getElementById('strings-picker-native'); if (el) { el.click(); }",
+                );
+            }
             MENU_XML_EXPORT => {
                 xml_text.set(export_entries(state.read().entries()));
                 xml_error.set(None);
@@ -507,138 +528,6 @@ fn App() -> Element {
                             },
                         }
                     }
-                    label { class: "io",
-                        "Load Strings"
-                        input {
-                            r#type: "file",
-                            accept: ".strings,.dlstrings,.ilstrings",
-                            onchange: move |event| async move {
-                                let Some(file) = event.files().into_iter().next() else { return; };
-                                let path = file.path();
-                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                                let Some(kind) = StringsKind::from_extension(ext) else {
-                                    file_status.set(format!("unsupported strings extension: {ext}"));
-                                    return;
-                                };
-                                let bytes = match file.read_bytes().await {
-                                    Ok(v) => v,
-                                    Err(err) => {
-                                        file_status.set(format!("Strings read error: {err}"));
-                                        return;
-                                    }
-                                };
-                                let parsed = match kind {
-                                    StringsKind::Strings => read_strings(&bytes),
-                                    StringsKind::DlStrings => read_dlstrings(&bytes),
-                                    StringsKind::IlStrings => read_ilstrings(&bytes),
-                                };
-                                match parsed {
-                                    Ok(strings) => {
-                                        let entries = strings
-                                            .entries
-                                            .iter()
-                                            .map(|e| Entry {
-                                                key: format!("strings:{}", e.id),
-                                                source_text: e.text.clone(),
-                                                target_text: String::new(),
-                                            })
-                                            .collect::<Vec<_>>();
-                                        history.write().apply(entries.clone());
-                                        state.write().set_entries(entries);
-                                        loaded_strings.set(Some(strings));
-                                        loaded_strings_kind.set(Some(kind));
-                                        loaded_strings_path.set(Some(path));
-                                        loaded_plugin.set(None);
-                                        loaded_plugin_path.set(None);
-                                        loaded_esp_strings.set(None);
-                                        file_status.set("Stringsを読み込みました".to_string());
-                                    }
-                                    Err(err) => file_status.set(format!("Strings parse error: {err:?}")),
-                                }
-                            },
-                        }
-                    }
-                    label { class: "io",
-                        "Load Plugin"
-                        input {
-                            r#type: "file",
-                            accept: ".esp,.esm,.esl,.xtplugin",
-                            onchange: move |event| async move {
-                                let Some(file) = event.files().into_iter().next() else { return; };
-                                let path = file.path();
-                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                                if ext == "xtplugin" {
-                                    match file.read_string().await {
-                                        Ok(content) => match read_plugin(&content) {
-                                            Ok(plugin) => {
-                                                let entries = plugin
-                                                    .entries
-                                                    .iter()
-                                                    .map(|e| Entry {
-                                                        key: format!("plugin:{}", e.id),
-                                                        source_text: e.source_text.clone(),
-                                                        target_text: String::new(),
-                                                    })
-                                                    .collect::<Vec<_>>();
-                                                history.write().apply(entries.clone());
-                                                state.write().set_entries(entries);
-                                                loaded_plugin.set(Some(plugin));
-                                                loaded_plugin_path.set(Some(path));
-                                                loaded_esp_strings.set(None);
-                                                loaded_strings.set(None);
-                                                loaded_strings_kind.set(None);
-                                                loaded_strings_path.set(None);
-                                                file_status.set("xtpluginを読み込みました".to_string());
-                                            }
-                                            Err(err) => file_status.set(format!("xtplugin parse error: {err:?}")),
-                                        },
-                                        Err(err) => file_status.set(format!("xtplugin read error: {err}")),
-                                    }
-                                } else {
-                                    let bytes = match file.read_bytes().await {
-                                        Ok(v) => v,
-                                        Err(err) => {
-                                            file_status.set(format!("plugin read error: {err}"));
-                                            return;
-                                        }
-                                    };
-                                    let workspace_root = workspace_root_from_plugin(&path);
-                                    let entries = match extract_esp_strings(&path, &workspace_root, Some("english")) {
-                                        Ok(strings) => {
-                                            loaded_esp_strings.set(Some(strings.clone()));
-                                            strings
-                                                .iter()
-                                                .map(|s| Entry {
-                                                    key: s.get_unique_key(),
-                                                    source_text: s.text.clone(),
-                                                    target_text: String::new(),
-                                                })
-                                                .collect::<Vec<_>>()
-                                        }
-                                        Err(err) => {
-                                            file_status.set(format!("ESP parse error (fallback): {err}"));
-                                            extract_null_terminated_utf8(&bytes, 4)
-                                                .into_iter()
-                                                .map(|x| Entry {
-                                                    key: format!("plugin:{:08x}", x.offset),
-                                                    source_text: x.text,
-                                                    target_text: String::new(),
-                                                })
-                                                .collect::<Vec<_>>()
-                                        }
-                                    };
-                                    history.write().apply(entries.clone());
-                                    state.write().set_entries(entries);
-                                    loaded_plugin.set(None);
-                                    loaded_plugin_path.set(Some(path));
-                                    loaded_strings.set(None);
-                                    loaded_strings_kind.set(None);
-                                    loaded_strings_path.set(None);
-                                    file_status.set("Pluginを読み込みました".to_string());
-                                }
-                            },
-                        }
-                    }
                 }
 
                 div { class: "io-row",
@@ -672,6 +561,138 @@ fn App() -> Element {
                     class: "xml",
                     value: "{xml_text}",
                     oninput: move |e| xml_text.set(e.value()),
+                }
+
+                input {
+                    id: "strings-picker-native",
+                    style: "display:none;",
+                    r#type: "file",
+                    accept: ".strings,.dlstrings,.ilstrings",
+                    onchange: move |event| async move {
+                        let Some(file) = event.files().into_iter().next() else { return; };
+                        let path = file.path();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        let Some(kind) = StringsKind::from_extension(ext) else {
+                            file_status.set(format!("unsupported strings extension: {ext}"));
+                            return;
+                        };
+                        let bytes = match file.read_bytes().await {
+                            Ok(v) => v,
+                            Err(err) => {
+                                file_status.set(format!("Strings read error: {err}"));
+                                return;
+                            }
+                        };
+                        let parsed = match kind {
+                            StringsKind::Strings => read_strings(&bytes),
+                            StringsKind::DlStrings => read_dlstrings(&bytes),
+                            StringsKind::IlStrings => read_ilstrings(&bytes),
+                        };
+                        match parsed {
+                            Ok(strings) => {
+                                let entries = strings
+                                    .entries
+                                    .iter()
+                                    .map(|e| Entry {
+                                        key: format!("strings:{}", e.id),
+                                        source_text: e.text.clone(),
+                                        target_text: String::new(),
+                                    })
+                                    .collect::<Vec<_>>();
+                                history.write().apply(entries.clone());
+                                state.write().set_entries(entries);
+                                loaded_strings.set(Some(strings));
+                                loaded_strings_kind.set(Some(kind));
+                                loaded_strings_path.set(Some(path));
+                                loaded_plugin.set(None);
+                                loaded_plugin_path.set(None);
+                                loaded_esp_strings.set(None);
+                                file_status.set("Stringsを読み込みました".to_string());
+                            }
+                            Err(err) => file_status.set(format!("Strings parse error: {err:?}")),
+                        }
+                    },
+                }
+
+                input {
+                    id: "plugin-picker-native",
+                    style: "display:none;",
+                    r#type: "file",
+                    accept: ".esp,.esm,.esl,.xtplugin",
+                    onchange: move |event| async move {
+                        let Some(file) = event.files().into_iter().next() else { return; };
+                        let path = file.path();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                        if ext == "xtplugin" {
+                            match file.read_string().await {
+                                Ok(content) => match read_plugin(&content) {
+                                    Ok(plugin) => {
+                                        let entries = plugin
+                                            .entries
+                                            .iter()
+                                            .map(|e| Entry {
+                                                key: format!("plugin:{}", e.id),
+                                                source_text: e.source_text.clone(),
+                                                target_text: String::new(),
+                                            })
+                                            .collect::<Vec<_>>();
+                                        history.write().apply(entries.clone());
+                                        state.write().set_entries(entries);
+                                        loaded_plugin.set(Some(plugin));
+                                        loaded_plugin_path.set(Some(path));
+                                        loaded_esp_strings.set(None);
+                                        loaded_strings.set(None);
+                                        loaded_strings_kind.set(None);
+                                        loaded_strings_path.set(None);
+                                        file_status.set("xtpluginを読み込みました".to_string());
+                                    }
+                                    Err(err) => file_status.set(format!("xtplugin parse error: {err:?}")),
+                                },
+                                Err(err) => file_status.set(format!("xtplugin read error: {err}")),
+                            }
+                        } else {
+                            let bytes = match file.read_bytes().await {
+                                Ok(v) => v,
+                                Err(err) => {
+                                    file_status.set(format!("plugin read error: {err}"));
+                                    return;
+                                }
+                            };
+                            let workspace_root = workspace_root_from_plugin(&path);
+                            let entries = match extract_esp_strings(&path, &workspace_root, Some("english")) {
+                                Ok(strings) => {
+                                    loaded_esp_strings.set(Some(strings.clone()));
+                                    strings
+                                        .iter()
+                                        .map(|s| Entry {
+                                            key: s.get_unique_key(),
+                                            source_text: s.text.clone(),
+                                            target_text: String::new(),
+                                        })
+                                        .collect::<Vec<_>>()
+                                }
+                                Err(err) => {
+                                    file_status.set(format!("ESP parse error (fallback): {err}"));
+                                    extract_null_terminated_utf8(&bytes, 4)
+                                        .into_iter()
+                                        .map(|x| Entry {
+                                            key: format!("plugin:{:08x}", x.offset),
+                                            source_text: x.text,
+                                            target_text: String::new(),
+                                        })
+                                        .collect::<Vec<_>>()
+                                }
+                            };
+                            history.write().apply(entries.clone());
+                            state.write().set_entries(entries);
+                            loaded_plugin.set(None);
+                            loaded_plugin_path.set(Some(path));
+                            loaded_strings.set(None);
+                            loaded_strings_kind.set(None);
+                            loaded_strings_path.set(None);
+                            file_status.set("Pluginを読み込みました".to_string());
+                        }
+                    },
                 }
             }
 
@@ -743,13 +764,18 @@ fn row_fields(key: &str, target_text: &str) -> (String, String, String) {
     (edid, record_id, ld)
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(all(
+    feature = "desktop",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
 fn build_native_menu() -> dioxus::desktop::muda::Menu {
     use dioxus::desktop::muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
     let menu = Menu::new();
 
     let file_menu = Submenu::new("ファイル(F)", true);
+    let open_plugin = MenuItem::with_id(MENU_OPEN_PLUGIN, "Esp/Esmファイルを開く", true, None);
+    let open_strings = MenuItem::with_id(MENU_OPEN_STRINGS, "Stringsファイルを開く", true, None);
     let xml_export = MenuItem::with_id(MENU_XML_EXPORT, "翻訳XMLを書き出し", true, None);
     let xml_apply = MenuItem::with_id(MENU_XML_APPLY, "翻訳XMLを一括適用", true, None);
     let save = MenuItem::with_id(MENU_SAVE_OVERWRITE, "上書き保存", true, None);
@@ -758,9 +784,11 @@ fn build_native_menu() -> dioxus::desktop::muda::Menu {
     let sep_file_2 = PredefinedMenuItem::separator();
     let quit = PredefinedMenuItem::quit(None);
     let _ = file_menu.append_items(&[
+        &open_plugin,
+        &open_strings,
+        &sep_file_1,
         &xml_export,
         &xml_apply,
-        &sep_file_1,
         &save,
         &save_as,
         &sep_file_2,
