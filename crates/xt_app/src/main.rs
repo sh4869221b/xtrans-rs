@@ -1,5 +1,6 @@
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
+use egui::{Context as EguiContext, Response as EguiResponse, TextEdit as EguiTextEdit, Ui};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -145,6 +146,64 @@ enum SpacerPosition {
     Bottom,
 }
 
+fn run_egui_text_edit<F>(ctx: &EguiContext, build: F) -> EguiResponse
+where
+    F: FnOnce(&mut Ui) -> EguiResponse,
+{
+    let mut response = None;
+    ctx.run(Default::default(), |ui| {
+        response = Some(build(ui));
+    });
+    response.unwrap_or_default()
+}
+
+#[component]
+fn EguiTextEditSingleline(
+    value: String,
+    hint: Option<String>,
+    id: Option<String>,
+    class: Option<String>,
+    on_change: Callback<String>,
+) -> Element {
+    let ctx = use_context::<EguiContext>();
+    let mut buffer = value.clone();
+    let response = run_egui_text_edit(&ctx, |ui| {
+        let edit = EguiTextEdit::singleline(&mut buffer);
+        let edit = hint.as_ref().map_or(edit, |hint| edit.hint_text(hint));
+        ui.add(edit)
+    });
+    if response.changed() && buffer != value {
+        on_change.call(buffer);
+    }
+    let host_class = class.map_or_else(
+        || "egui-textedit-host singleline".to_string(),
+        |class| format!("egui-textedit-host singleline {class}"),
+    );
+    let host_id = id.unwrap_or_default();
+    rsx! { div { id: "{host_id}", class: "{host_class}" } }
+}
+
+#[component]
+fn EguiTextEditMultiline(
+    value: String,
+    id: Option<String>,
+    class: Option<String>,
+    on_change: Callback<String>,
+) -> Element {
+    let ctx = use_context::<EguiContext>();
+    let mut buffer = value.clone();
+    let response = run_egui_text_edit(&ctx, |ui| ui.add(EguiTextEdit::multiline(&mut buffer)));
+    if response.changed() && buffer != value {
+        on_change.call(buffer);
+    }
+    let host_class = class.map_or_else(
+        || "egui-textedit-host multiline".to_string(),
+        |class| format!("egui-textedit-host multiline {class}"),
+    );
+    let host_id = id.unwrap_or_default();
+    rsx! { div { id: "{host_id}", class: "{host_class}" } }
+}
+
 fn main() {
     #[cfg(all(
         feature = "desktop",
@@ -167,6 +226,8 @@ fn main() {
 fn App() -> Element {
     let mut history = use_signal(|| UndoStack::new(Vec::new()));
     let mut state = use_signal(|| TwoPaneState::new(history.read().present().clone()));
+
+    use_context_provider(|| EguiContext::default());
 
     let mut scroll_offset = use_signal(|| 0.0f32);
     let mut viewport_height = use_signal(|| 520.0f32);
@@ -483,12 +544,13 @@ fn App() -> Element {
                 button { class: "tool-ic", "T" }
                 button { class: "tool-ic", "O" }
                 button { class: "tool-ic", "Y" }
-                input {
-                    id: "search",
-                    value: "{query}",
-                    placeholder: "原文/訳文/ID検索...",
-                    oninput: move |e| {
-                        state.write().set_query(&e.value());
+                EguiTextEditSingleline {
+                    value: query.clone(),
+                    hint: Some("原文/訳文/ID検索...".to_string()),
+                    id: Some("search".to_string()),
+                    class: None,
+                    on_change: move |next| {
+                        state.write().set_query(&next);
                         scroll_offset.set(0.0);
                     },
                 }
@@ -601,16 +663,18 @@ fn App() -> Element {
                         div { class: "editor",
                             p { class: "k", "Key: {entry.key}" }
                             label { "原文" }
-                            textarea {
-                                class: "txt",
-                                value: "{edit_source}",
-                                oninput: move |e| edit_source.set(e.value()),
+                            EguiTextEditMultiline {
+                                value: edit_source(),
+                                id: None,
+                                class: Some("txt".to_string()),
+                                on_change: move |next| edit_source.set(next),
                             }
                             label { "訳文" }
-                            textarea {
-                                class: "txt",
-                                value: "{edit_target}",
-                                oninput: move |e| edit_target.set(e.value()),
+                            EguiTextEditMultiline {
+                                value: edit_target(),
+                                id: None,
+                                class: Some("txt".to_string()),
+                                on_change: move |next| edit_target.set(next),
                             }
                             div { class: "actions",
                                 button {
@@ -683,23 +747,32 @@ fn App() -> Element {
                 div { class: "io-row",
                     label { class: "io",
                         "Dict Src"
-                        input {
-                            value: "{dict_source_lang}",
-                            oninput: move |e| dict_source_lang.set(e.value()),
+                        EguiTextEditSingleline {
+                            value: dict_source_lang(),
+                            hint: None,
+                            id: None,
+                            class: None,
+                            on_change: move |next| dict_source_lang.set(next),
                         }
                     }
                     label { class: "io",
                         "Dict Dst"
-                        input {
-                            value: "{dict_target_lang}",
-                            oninput: move |e| dict_target_lang.set(e.value()),
+                        EguiTextEditSingleline {
+                            value: dict_target_lang(),
+                            hint: None,
+                            id: None,
+                            class: None,
+                            on_change: move |next| dict_target_lang.set(next),
                         }
                     }
                     label { class: "io io-wide",
                         "Dict Root"
-                        input {
-                            value: "{dict_root}",
-                            oninput: move |e| dict_root.set(e.value()),
+                        EguiTextEditSingleline {
+                            value: dict_root(),
+                            hint: None,
+                            id: None,
+                            class: None,
+                            on_change: move |next| dict_root.set(next),
                         }
                     }
                     if !dict_status().is_empty() {
@@ -710,10 +783,11 @@ fn App() -> Element {
                     }
                 }
 
-                textarea {
-                    class: "xml",
-                    value: "{xml_text}",
-                    oninput: move |e| xml_text.set(e.value()),
+                EguiTextEditMultiline {
+                    value: xml_text(),
+                    id: None,
+                    class: Some("xml".to_string()),
+                    on_change: move |next| xml_text.set(next),
                 }
 
                 input {

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 dioxus = { version = "0.7.1", features = ["router", "fullstack"] }
+egui = "0.28.1"
 xt_core = { path = "../xt_core" }
 
 [features]
