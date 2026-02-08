@@ -5,12 +5,12 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-dioxus = { version = "0.7.1", features = ["router", "fullstack"] }
+dioxus = { version = "0.7.1", features = ["router", "fullstack"], optional = true }
+eframe = { version = "0.27", optional = true }
+egui = { version = "0.27", optional = true }
 xt_core = { path = "../xt_core" }
 
 [features]
-default = ["desktop"]
-web = ["dioxus/web"]
-desktop = ["dioxus/desktop"]
-mobile = ["dioxus/mobile"]
-server = ["dioxus/server"]
+default = ["egui-desktop"]
+egui-desktop = ["dep:eframe", "dep:egui"]
+dioxus-desktop = ["dep:dioxus", "dioxus/desktop", "dioxus/router", "dioxus/fullstack"]
