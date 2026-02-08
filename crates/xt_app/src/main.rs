@@ -163,6 +163,26 @@ fn main() {
     dioxus::launch(App);
 }
 
+// UIセクション分類メモ（egui への移植検討用）
+// - メニュー: build_native_menu() + use_muda_event_handler (desktop)
+//   -> egui::TopBottomPanel + egui::menu::bar + eframe::App::update でメニュー処理。
+// - ショートカット: use_global_shortcut (desktop)
+//   -> egui::Context::input(|i| i.consume_key(...)) / egui::KeyboardShortcut。
+// - タブ: Tab enum + tabs buttons
+//   -> egui::TopBottomPanel/egui::TopPanel + selectable_value でタブ切替。
+// - 仮想リスト: virtual_window + grid-body scroll
+//   -> egui::ScrollArea::vertical().show_rows(...) などの仮想化。
+// - 入力編集: textarea/input + edit_source/edit_target
+//   -> egui::TextEdit::multiline / TextEdit::singleline。
+// - ダイアログ/ファイル: input type=file + document::eval
+//   -> eframe + rfd::FileDialog などのネイティブファイルピッカー。
+// - ログ表示: Tab::Log + log panel
+//   -> egui::ScrollArea + egui::Label。
+// Dioxus依存点 -> egui代替メモ:
+// - use_signal: eframe::App のフィールド / egui::Context::data を状態置き場に。
+// - use_effect: eframe::App::update 内の状態変化検知 + request_repaint で副作用。
+// - dioxus::desktop::*: eframe (ウィンドウ/メニュー/ショートカット統合)。
+// - asset!: include_bytes! / egui::include_image! でアイコン/スタイル等を埋め込み。
 #[component]
 fn App() -> Element {
     let mut history = use_signal(|| UndoStack::new(Vec::new()));
@@ -435,6 +455,7 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
 
         div { id: "app-shell",
+            // UI: ドラッグ&ドロップ (XML 取り込み)
             ondragover: move |event| {
                 event.prevent_default();
             },
@@ -478,6 +499,7 @@ fn App() -> Element {
                     Err(err) => file_status.set(format!("XML read error (drop): {err}")),
                 }
             },
+            // UI: ツールバー + 検索 + 検証/差分/エンコーディング
             div { class: "toolbar",
                 button { class: "tool-ic", "F" }
                 button { class: "tool-ic", "T" }
@@ -535,12 +557,14 @@ fn App() -> Element {
                 }
             }
 
+            // UI: チャンネル進捗メーター
             div { class: "channels",
                 ChannelBox { label: format!("STRINGS [{}/{}]", counts.translated, counts.strings), ratio: ratio, color: "#dc4a4a" }
                 ChannelBox { label: format!("DLSTRINGS [0/{}]", counts.dlstrings), ratio: 0.0, color: "#557fd9" }
                 ChannelBox { label: format!("ILSTRINGS [0/{}]", counts.ilstrings), ratio: 0.0, color: "#76a65d" }
             }
 
+            // UI: 仮想リスト + 行一覧
             div { class: "grid-wrap",
                 div { class: "grid-head",
                     span { class: "c-edid", "EDID" }
@@ -585,6 +609,7 @@ fn App() -> Element {
                 }
             }
 
+            // UI: タブセレクタ
             div { class: "tabs",
                 for (tab, label) in Tab::all() {
                     button {
@@ -595,9 +620,11 @@ fn App() -> Element {
                 }
             }
 
+            // UI: タブ本体 (編集/ログ/その他)
             div { class: "panel",
                 if active_tab() == Tab::Home {
                     if let Some(entry) = selected_entry {
+                        // UI: 入力編集
                         div { class: "editor",
                             p { class: "k", "Key: {entry.key}" }
                             label { "原文" }
@@ -653,6 +680,7 @@ fn App() -> Element {
                         p { "行を選択してください。" }
                     }
                 } else if active_tab() == Tab::Log {
+                    // UI: ログ表示
                     div { class: "log",
                         if !file_status().is_empty() { p { "{file_status}" } }
                         if !dict_status().is_empty() { p { "{dict_status}" } }
@@ -676,6 +704,7 @@ fn App() -> Element {
                     p { "このタブは次フェーズで実装します。" }
                 }
 
+                // UI: XML/辞書設定/ファイル操作
                 div { class: "io-row",
                     p { class: "inline", "XML適用: メニュー「ファイル > 翻訳XMLを一括適用」またはXMLファイルのドラッグ&ドロップを使用" }
                 }
