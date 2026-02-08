@@ -26,6 +26,8 @@ use xt_core::validation::{
 };
 use xt_core::virtual_list::{virtual_window, VirtualWindow};
 
+mod egui_theme;
+
 const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
