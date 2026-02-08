@@ -1,4 +1,3 @@
-use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -215,6 +214,185 @@ fn App() -> Element {
 
     let mut active_tab = use_signal(|| Tab::Home);
 
+    let mut apply_xml_from_path = {
+        let mut history = history.clone();
+        let mut state = state.clone();
+        let mut xml_text = xml_text.clone();
+        let mut xml_error = xml_error.clone();
+        let mut file_status = file_status.clone();
+        move |path: PathBuf| {
+            match std::fs::read_to_string(&path) {
+                Ok(contents) => {
+                    xml_text.set(contents.clone());
+                    let current_entries = state.read().entries().to_vec();
+                    match apply_xml_payload(&current_entries, &contents) {
+                        Ok((merged, stats)) => {
+                            if stats.updated > 0 {
+                                history.write().apply(merged.clone());
+                                state.write().set_entries(merged);
+                            }
+                            file_status.set(format!(
+                                "XML適用: updated={} unchanged={} missing={}",
+                                stats.updated, stats.unchanged, stats.missing
+                            ));
+                            xml_error.set(None);
+                        }
+                        Err(err) => {
+                            xml_error.set(Some(err.clone()));
+                            file_status.set(format!("XML適用失敗: {err}"));
+                        }
+                    }
+                }
+                Err(err) => file_status.set(format!(
+                    "XML read error: {}",
+                    err
+                )),
+            }
+        }
+    };
+
+    let mut open_strings_from_path = {
+        let mut history = history.clone();
+        let mut state = state.clone();
+        let mut loaded_strings = loaded_strings.clone();
+        let mut loaded_strings_kind = loaded_strings_kind.clone();
+        let mut loaded_strings_path = loaded_strings_path.clone();
+        let mut loaded_plugin = loaded_plugin.clone();
+        let mut loaded_plugin_path = loaded_plugin_path.clone();
+        let mut loaded_esp_strings = loaded_esp_strings.clone();
+        let mut file_status = file_status.clone();
+        move |path: PathBuf| {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let Some(kind) = StringsKind::from_extension(ext) else {
+                file_status.set(format!("unsupported strings extension: {ext}"));
+                return;
+            };
+            let bytes = match std::fs::read(&path) {
+                Ok(v) => v,
+                Err(err) => {
+                    file_status.set(format!("Strings read error: {err}"));
+                    return;
+                }
+            };
+            let parsed = match kind {
+                StringsKind::Strings => read_strings(&bytes),
+                StringsKind::DlStrings => read_dlstrings(&bytes),
+                StringsKind::IlStrings => read_ilstrings(&bytes),
+            };
+            match parsed {
+                Ok(strings) => {
+                    let entries = strings
+                        .entries
+                        .iter()
+                        .map(|e| Entry {
+                            key: format!("strings:{}", e.id),
+                            source_text: e.text.clone(),
+                            target_text: String::new(),
+                        })
+                        .collect::<Vec<_>>();
+                    history.write().apply(entries.clone());
+                    state.write().set_entries(entries);
+                    loaded_strings.set(Some(strings));
+                    loaded_strings_kind.set(Some(kind));
+                    loaded_strings_path.set(Some(path));
+                    loaded_plugin.set(None);
+                    loaded_plugin_path.set(None);
+                    loaded_esp_strings.set(None);
+                    file_status.set("Stringsを読み込みました".to_string());
+                }
+                Err(err) => file_status.set(format!("Strings parse error: {err:?}")),
+            }
+        }
+    };
+
+    let mut open_plugin_from_path = {
+        let mut history = history.clone();
+        let mut state = state.clone();
+        let mut loaded_plugin = loaded_plugin.clone();
+        let mut loaded_plugin_path = loaded_plugin_path.clone();
+        let mut loaded_esp_strings = loaded_esp_strings.clone();
+        let mut loaded_strings = loaded_strings.clone();
+        let mut loaded_strings_kind = loaded_strings_kind.clone();
+        let mut loaded_strings_path = loaded_strings_path.clone();
+        let mut file_status = file_status.clone();
+        move |path: PathBuf| {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if ext == "xtplugin" {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => match read_plugin(&content) {
+                        Ok(plugin) => {
+                            let entries = plugin
+                                .entries
+                                .iter()
+                                .map(|e| Entry {
+                                    key: format!("plugin:{}", e.id),
+                                    source_text: e.source_text.clone(),
+                                    target_text: String::new(),
+                                })
+                                .collect::<Vec<_>>();
+                            history.write().apply(entries.clone());
+                            state.write().set_entries(entries);
+                            loaded_plugin.set(Some(plugin));
+                            loaded_plugin_path.set(Some(path));
+                            loaded_esp_strings.set(None);
+                            loaded_strings.set(None);
+                            loaded_strings_kind.set(None);
+                            loaded_strings_path.set(None);
+                            file_status.set("xtpluginを読み込みました".to_string());
+                        }
+                        Err(err) => file_status.set(format!("xtplugin parse error: {err:?}")),
+                    },
+                    Err(err) => file_status.set(format!("xtplugin read error: {err}")),
+                }
+            } else {
+                let bytes = match std::fs::read(&path) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        file_status.set(format!("plugin read error: {err}"));
+                        return;
+                    }
+                };
+                let workspace_root = workspace_root_from_plugin(&path);
+                let entries = match extract_esp_strings(&path, &workspace_root, Some("english")) {
+                    Ok(strings) => {
+                        loaded_esp_strings.set(Some(strings.clone()));
+                        strings
+                            .iter()
+                            .map(|s| Entry {
+                                key: s.get_unique_key(),
+                                source_text: s.text.clone(),
+                                target_text: String::new(),
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    Err(err) => {
+                        file_status.set(format!("ESP parse error (fallback): {err}"));
+                        extract_null_terminated_utf8(&bytes, 4)
+                            .into_iter()
+                            .map(|x| Entry {
+                                key: format!("plugin:{:08x}", x.offset),
+                                source_text: x.text,
+                                target_text: String::new(),
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                };
+                history.write().apply(entries.clone());
+                state.write().set_entries(entries);
+                loaded_plugin.set(None);
+                loaded_plugin_path.set(Some(path));
+                loaded_strings.set(None);
+                loaded_strings_kind.set(None);
+                loaded_strings_path.set(None);
+                file_status.set("Pluginを読み込みました".to_string());
+            }
+        }
+    };
+
     use_effect(move || {
         let prefs = DictionaryPrefs {
             source_lang: dict_source_lang(),
@@ -233,16 +411,23 @@ fn App() -> Element {
     ))]
     {
         use dioxus::desktop::use_muda_event_handler;
+        use rfd::FileDialog;
         use_muda_event_handler(move |event| match event.id.as_ref() {
             MENU_OPEN_PLUGIN => {
-                document::eval(
-                    "const el = document.getElementById('plugin-picker-native'); if (el) { el.click(); }",
-                );
+                if let Some(path) = FileDialog::new()
+                    .add_filter("Plugin", &["esp", "esm", "esl", "xtplugin"])
+                    .pick_file()
+                {
+                    open_plugin_from_path(path);
+                }
             }
             MENU_OPEN_STRINGS => {
-                document::eval(
-                    "const el = document.getElementById('strings-picker-native'); if (el) { el.click(); }",
-                );
+                if let Some(path) = FileDialog::new()
+                    .add_filter("Strings", &["strings", "dlstrings", "ilstrings"])
+                    .pick_file()
+                {
+                    open_strings_from_path(path);
+                }
             }
             MENU_XML_EXPORT => {
                 xml_text.set(export_entries(state.read().entries()));
@@ -250,9 +435,9 @@ fn App() -> Element {
                 file_status.set("XMLを書き出しました（エディタ）".to_string());
             }
             MENU_XML_APPLY => {
-                document::eval(
-                    "const el = document.getElementById('xml-picker-native'); if (el) { el.click(); }",
-                );
+                if let Some(path) = FileDialog::new().add_filter("XML", &["xml"]).pick_file() {
+                    apply_xml_from_path(path);
+                }
             }
             MENU_SAVE_OVERWRITE => match save_overwrite(
                 state.read().entries(),
@@ -435,49 +620,6 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
 
         div { id: "app-shell",
-            ondragover: move |event| {
-                event.prevent_default();
-            },
-            ondrop: move |event| async move {
-                event.prevent_default();
-                let Some(file) = event.files().into_iter().next() else {
-                    return;
-                };
-                let path = file.path();
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if ext != "xml" {
-                    file_status.set(format!("drop ignored (not xml): {}", path.display()));
-                    return;
-                }
-                match file.read_string().await {
-                    Ok(contents) => {
-                        xml_text.set(contents.clone());
-                        let current_entries = state.read().entries().to_vec();
-                        match apply_xml_payload(&current_entries, &contents) {
-                            Ok((merged, stats)) => {
-                                if stats.updated > 0 {
-                                    history.write().apply(merged.clone());
-                                    state.write().set_entries(merged);
-                                }
-                                file_status.set(format!(
-                                    "XML適用(drop): updated={} unchanged={} missing={}",
-                                    stats.updated, stats.unchanged, stats.missing
-                                ));
-                                xml_error.set(None);
-                            }
-                            Err(err) => {
-                                xml_error.set(Some(err.clone()));
-                                file_status.set(format!("XML適用失敗(drop): {err}"));
-                            }
-                        }
-                    }
-                    Err(err) => file_status.set(format!("XML read error (drop): {err}")),
-                }
-            },
             div { class: "toolbar",
                 button { class: "tool-ic", "F" }
                 button { class: "tool-ic", "T" }
@@ -677,7 +819,7 @@ fn App() -> Element {
                 }
 
                 div { class: "io-row",
-                    p { class: "inline", "XML適用: メニュー「ファイル > 翻訳XMLを一括適用」またはXMLファイルのドラッグ&ドロップを使用" }
+                    p { class: "inline", "XML適用: メニュー「ファイル > 翻訳XMLを一括適用」でXMLファイルを選択" }
                 }
 
                 div { class: "io-row",
@@ -714,172 +856,6 @@ fn App() -> Element {
                     class: "xml",
                     value: "{xml_text}",
                     oninput: move |e| xml_text.set(e.value()),
-                }
-
-                input {
-                    id: "xml-picker-native",
-                    style: "display:none;",
-                    r#type: "file",
-                    accept: ".xml",
-                    onchange: move |event| async move {
-                        let Some(file) = event.files().into_iter().next() else { return; };
-                        match file.read_string().await {
-                            Ok(contents) => {
-                                xml_text.set(contents.clone());
-                                let current_entries = state.read().entries().to_vec();
-                                match apply_xml_payload(&current_entries, &contents) {
-                                    Ok((merged, stats)) => {
-                                        if stats.updated > 0 {
-                                            history.write().apply(merged.clone());
-                                            state.write().set_entries(merged);
-                                        }
-                                        file_status.set(format!(
-                                            "XML適用: updated={} unchanged={} missing={}",
-                                            stats.updated, stats.unchanged, stats.missing
-                                        ));
-                                        xml_error.set(None);
-                                    }
-                                    Err(err) => {
-                                        xml_error.set(Some(err.clone()));
-                                        file_status.set(format!("XML適用失敗: {err}"));
-                                    }
-                                }
-                            }
-                            Err(err) => file_status.set(format!("XML read error: {err}")),
-                        }
-                    },
-                }
-
-                input {
-                    id: "strings-picker-native",
-                    style: "display:none;",
-                    r#type: "file",
-                    accept: ".strings,.dlstrings,.ilstrings",
-                    onchange: move |event| async move {
-                        let Some(file) = event.files().into_iter().next() else { return; };
-                        let path = file.path();
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        let Some(kind) = StringsKind::from_extension(ext) else {
-                            file_status.set(format!("unsupported strings extension: {ext}"));
-                            return;
-                        };
-                        let bytes = match file.read_bytes().await {
-                            Ok(v) => v,
-                            Err(err) => {
-                                file_status.set(format!("Strings read error: {err}"));
-                                return;
-                            }
-                        };
-                        let parsed = match kind {
-                            StringsKind::Strings => read_strings(&bytes),
-                            StringsKind::DlStrings => read_dlstrings(&bytes),
-                            StringsKind::IlStrings => read_ilstrings(&bytes),
-                        };
-                        match parsed {
-                            Ok(strings) => {
-                                let entries = strings
-                                    .entries
-                                    .iter()
-                                    .map(|e| Entry {
-                                        key: format!("strings:{}", e.id),
-                                        source_text: e.text.clone(),
-                                        target_text: String::new(),
-                                    })
-                                    .collect::<Vec<_>>();
-                                history.write().apply(entries.clone());
-                                state.write().set_entries(entries);
-                                loaded_strings.set(Some(strings));
-                                loaded_strings_kind.set(Some(kind));
-                                loaded_strings_path.set(Some(path));
-                                loaded_plugin.set(None);
-                                loaded_plugin_path.set(None);
-                                loaded_esp_strings.set(None);
-                                file_status.set("Stringsを読み込みました".to_string());
-                            }
-                            Err(err) => file_status.set(format!("Strings parse error: {err:?}")),
-                        }
-                    },
-                }
-
-                input {
-                    id: "plugin-picker-native",
-                    style: "display:none;",
-                    r#type: "file",
-                    accept: ".esp,.esm,.esl,.xtplugin",
-                    onchange: move |event| async move {
-                        let Some(file) = event.files().into_iter().next() else { return; };
-                        let path = file.path();
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                        if ext == "xtplugin" {
-                            match file.read_string().await {
-                                Ok(content) => match read_plugin(&content) {
-                                    Ok(plugin) => {
-                                        let entries = plugin
-                                            .entries
-                                            .iter()
-                                            .map(|e| Entry {
-                                                key: format!("plugin:{}", e.id),
-                                                source_text: e.source_text.clone(),
-                                                target_text: String::new(),
-                                            })
-                                            .collect::<Vec<_>>();
-                                        history.write().apply(entries.clone());
-                                        state.write().set_entries(entries);
-                                        loaded_plugin.set(Some(plugin));
-                                        loaded_plugin_path.set(Some(path));
-                                        loaded_esp_strings.set(None);
-                                        loaded_strings.set(None);
-                                        loaded_strings_kind.set(None);
-                                        loaded_strings_path.set(None);
-                                        file_status.set("xtpluginを読み込みました".to_string());
-                                    }
-                                    Err(err) => file_status.set(format!("xtplugin parse error: {err:?}")),
-                                },
-                                Err(err) => file_status.set(format!("xtplugin read error: {err}")),
-                            }
-                        } else {
-                            let bytes = match file.read_bytes().await {
-                                Ok(v) => v,
-                                Err(err) => {
-                                    file_status.set(format!("plugin read error: {err}"));
-                                    return;
-                                }
-                            };
-                            let workspace_root = workspace_root_from_plugin(&path);
-                            let entries = match extract_esp_strings(&path, &workspace_root, Some("english")) {
-                                Ok(strings) => {
-                                    loaded_esp_strings.set(Some(strings.clone()));
-                                    strings
-                                        .iter()
-                                        .map(|s| Entry {
-                                            key: s.get_unique_key(),
-                                            source_text: s.text.clone(),
-                                            target_text: String::new(),
-                                        })
-                                        .collect::<Vec<_>>()
-                                }
-                                Err(err) => {
-                                    file_status.set(format!("ESP parse error (fallback): {err}"));
-                                    extract_null_terminated_utf8(&bytes, 4)
-                                        .into_iter()
-                                        .map(|x| Entry {
-                                            key: format!("plugin:{:08x}", x.offset),
-                                            source_text: x.text,
-                                            target_text: String::new(),
-                                        })
-                                        .collect::<Vec<_>>()
-                                }
-                            };
-                            history.write().apply(entries.clone());
-                            state.write().set_entries(entries);
-                            loaded_plugin.set(None);
-                            loaded_plugin_path.set(Some(path));
-                            loaded_strings.set(None);
-                            loaded_strings_kind.set(None);
-                            loaded_strings_path.set(None);
-                            file_status.set("Pluginを読み込みました".to_string());
-                        }
-                    },
                 }
             }
 
