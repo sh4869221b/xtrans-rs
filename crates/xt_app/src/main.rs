@@ -76,6 +76,19 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Tab(Tab),
+}
+
+impl View {
+    fn tab(self) -> Tab {
+        match self {
+            View::Tab(tab) => tab,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum StringsKind {
     Strings,
@@ -213,7 +226,7 @@ fn App() -> Element {
     let mut dict_prefs_error = use_signal(String::new);
     let mut dict_build_summary = use_signal(|| Option::<DictionaryBuildSummary>::None);
 
-    let mut active_tab = use_signal(|| Tab::Home);
+    let mut active_view = use_signal(|| View::Tab(Tab::Home));
 
     use_effect(move || {
         let prefs = DictionaryPrefs {
@@ -320,7 +333,7 @@ fn App() -> Element {
                     Err(err) => dict_status.set(err.to_string()),
                 }
             }
-            MENU_LANG_PANEL => active_tab.set(Tab::Lang),
+            MENU_LANG_PANEL => active_view.set(View::Tab(Tab::Lang)),
             MENU_LANG_RESET => {
                 dict_source_lang.set(DEFAULT_DICT_SOURCE_LANG.to_string());
                 dict_target_lang.set(DEFAULT_DICT_TARGET_LANG.to_string());
@@ -342,7 +355,7 @@ fn App() -> Element {
                     state.write().set_entries(entries);
                 }
             }
-            MENU_LOG_TAB => active_tab.set(Tab::Log),
+            MENU_LOG_TAB => active_view.set(View::Tab(Tab::Log)),
             _ => {}
         });
     }
@@ -588,93 +601,97 @@ fn App() -> Element {
             div { class: "tabs",
                 for (tab, label) in Tab::all() {
                     button {
-                        class: if active_tab() == tab { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(tab),
+                        class: if active_view().tab() == tab { "tab active" } else { "tab" },
+                        onclick: move |_| active_view.set(View::Tab(tab)),
                         "{label}"
                     }
                 }
             }
 
             div { class: "panel",
-                if active_tab() == Tab::Home {
-                    if let Some(entry) = selected_entry {
-                        div { class: "editor",
-                            p { class: "k", "Key: {entry.key}" }
-                            label { "原文" }
-                            textarea {
-                                class: "txt",
-                                value: "{edit_source}",
-                                oninput: move |e| edit_source.set(e.value()),
-                            }
-                            label { "訳文" }
-                            textarea {
-                                class: "txt",
-                                value: "{edit_target}",
-                                oninput: move |e| edit_target.set(e.value()),
-                            }
-                            div { class: "actions",
-                                button {
-                                    class: "tool-btn",
-                                    disabled: selected_key.is_none(),
-                                    onclick: move |_| {
-                                        let Some(key) = state.read().selected_key().map(|s| s.to_string()) else { return; };
-                                        let next = {
-                                            let mut s = state.write();
-                                            if s.update_entry(&key, &edit_source(), &edit_target()) {
-                                                Some(s.entries().to_vec())
-                                            } else {
-                                                None
-                                            }
-                                        };
-                                        if let Some(entries) = next {
-                                            history.write().apply(entries);
-                                        }
-                                    },
-                                    "Apply Edit"
+                {match active_view() {
+                    View::Tab(Tab::Home) => rsx! {
+                        if let Some(entry) = selected_entry {
+                            div { class: "editor",
+                                p { class: "k", "Key: {entry.key}" }
+                                label { "原文" }
+                                textarea {
+                                    class: "txt",
+                                    value: "{edit_source}",
+                                    oninput: move |e| edit_source.set(e.value()),
                                 }
-                                button {
-                                    class: "tool-btn",
-                                    onclick: move |_| {
-                                        let p = loaded_plugin().clone();
-                                        let s = loaded_strings().clone();
-                                        match (p, s) {
-                                            (Some(plugin), Some(strings)) => {
-                                                hybrid_preview.set(build_hybrid_entries(&plugin, &strings));
-                                                hybrid_error.set(None);
+                                label { "訳文" }
+                                textarea {
+                                    class: "txt",
+                                    value: "{edit_target}",
+                                    oninput: move |e| edit_target.set(e.value()),
+                                }
+                                div { class: "actions",
+                                    button {
+                                        class: "tool-btn",
+                                        disabled: selected_key.is_none(),
+                                        onclick: move |_| {
+                                            let Some(key) = state.read().selected_key().map(|s| s.to_string()) else { return; };
+                                            let next = {
+                                                let mut s = state.write();
+                                                if s.update_entry(&key, &edit_source(), &edit_target()) {
+                                                    Some(s.entries().to_vec())
+                                                } else {
+                                                    None
+                                                }
+                                            };
+                                            if let Some(entries) = next {
+                                                history.write().apply(entries);
                                             }
-                                            _ => hybrid_error.set(Some("Plugin/Stringsを先に読み込んでください".to_string())),
-                                        }
-                                    },
-                                    "Build Hybrid"
+                                        },
+                                        "Apply Edit"
+                                    }
+                                    button {
+                                        class: "tool-btn",
+                                        onclick: move |_| {
+                                            let p = loaded_plugin().clone();
+                                            let s = loaded_strings().clone();
+                                            match (p, s) {
+                                                (Some(plugin), Some(strings)) => {
+                                                    hybrid_preview.set(build_hybrid_entries(&plugin, &strings));
+                                                    hybrid_error.set(None);
+                                                }
+                                                _ => hybrid_error.set(Some("Plugin/Stringsを先に読み込んでください".to_string())),
+                                            }
+                                        },
+                                        "Build Hybrid"
+                                    }
+                                }
+                            }
+                        } else {
+                            p { "行を選択してください。" }
+                        }
+                    },
+                    View::Tab(Tab::Log) => rsx! {
+                        div { class: "log",
+                            if !file_status().is_empty() { p { "{file_status}" } }
+                            if !dict_status().is_empty() { p { "{dict_status}" } }
+                            if !dict_prefs_error().is_empty() { p { class: "err", "{dict_prefs_error}" } }
+                            if let Some(summary) = dict_build_summary() {
+                                p {
+                                    "辞書情報: built_at(unix)={summary.built_at_unix} pairs={summary.pairs} files={summary.files_seen} pair_files={summary.file_pairs}"
+                                }
+                            }
+                            if let Some(err) = xml_error() { p { class: "err", "{err}" } }
+                            if let Some(err) = hybrid_error() { p { class: "err", "{err}" } }
+                            if let Some(status) = diff_status() { p { "Diff status: {status:?}" } }
+                            if !encoding_status().is_empty() { p { "{encoding_status}" } }
+                            if !validation_issues().is_empty() {
+                                for issue in validation_issues() {
+                                    p { "{issue.rule_id}: {issue.message}" }
                                 }
                             }
                         }
-                    } else {
-                        p { "行を選択してください。" }
-                    }
-                } else if active_tab() == Tab::Log {
-                    div { class: "log",
-                        if !file_status().is_empty() { p { "{file_status}" } }
-                        if !dict_status().is_empty() { p { "{dict_status}" } }
-                        if !dict_prefs_error().is_empty() { p { class: "err", "{dict_prefs_error}" } }
-                        if let Some(summary) = dict_build_summary() {
-                            p {
-                                "辞書情報: built_at(unix)={summary.built_at_unix} pairs={summary.pairs} files={summary.files_seen} pair_files={summary.file_pairs}"
-                            }
-                        }
-                        if let Some(err) = xml_error() { p { class: "err", "{err}" } }
-                        if let Some(err) = hybrid_error() { p { class: "err", "{err}" } }
-                        if let Some(status) = diff_status() { p { "Diff status: {status:?}" } }
-                        if !encoding_status().is_empty() { p { "{encoding_status}" } }
-                        if !validation_issues().is_empty() {
-                            for issue in validation_issues() {
-                                p { "{issue.rule_id}: {issue.message}" }
-                            }
-                        }
-                    }
-                } else {
-                    p { "このタブは次フェーズで実装します。" }
-                }
+                    },
+                    View::Tab(_) => rsx! {
+                        p { "このタブは次フェーズで実装します。" }
+                    },
+                }}
 
                 div { class: "io-row",
                     p { class: "inline", "XML適用: メニュー「ファイル > 翻訳XMLを一括適用」またはXMLファイルのドラッグ&ドロップを使用" }
