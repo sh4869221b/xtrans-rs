@@ -145,6 +145,128 @@ enum SpacerPosition {
     Bottom,
 }
 
+#[derive(Clone, Copy)]
+struct App {
+    history: Signal<UndoStack<Vec<Entry>>>,
+    state: Signal<TwoPaneState>,
+    scroll_offset: Signal<f32>,
+    viewport_height: Signal<f32>,
+    edit_source: Signal<String>,
+    edit_target: Signal<String>,
+    xml_text: Signal<String>,
+    xml_error: Signal<Option<String>>,
+    file_status: Signal<String>,
+    validation_issues: Signal<Vec<ValidationIssue>>,
+    diff_status: Signal<Option<EntryStatus>>,
+    encoding_status: Signal<String>,
+    hybrid_preview: Signal<Vec<HybridEntry>>,
+    hybrid_error: Signal<Option<String>>,
+    loaded_strings: Signal<Option<StringsFile>>,
+    loaded_strings_kind: Signal<Option<StringsKind>>,
+    loaded_strings_path: Signal<Option<PathBuf>>,
+    loaded_plugin: Signal<Option<PluginFile>>,
+    loaded_plugin_path: Signal<Option<PathBuf>>,
+    loaded_esp_strings: Signal<Option<Vec<ExtractedString>>>,
+    dict: Signal<Option<TranslationDictionary>>,
+    dict_source_lang: Signal<String>,
+    dict_target_lang: Signal<String>,
+    dict_root: Signal<String>,
+    dict_status: Signal<String>,
+    dict_prefs_error: Signal<String>,
+    dict_build_summary: Signal<Option<DictionaryBuildSummary>>,
+    active_tab: Signal<Tab>,
+}
+
+impl App {
+    fn new() -> Self {
+        let mut history = use_signal(|| UndoStack::new(Vec::new()));
+        let mut state = use_signal(|| TwoPaneState::new(history.read().present().clone()));
+
+        let mut scroll_offset = use_signal(|| 0.0f32);
+        let mut viewport_height = use_signal(|| 520.0f32);
+
+        let mut edit_source = use_signal(String::new);
+        let mut edit_target = use_signal(String::new);
+
+        let mut xml_text = use_signal(String::new);
+        let mut xml_error = use_signal(|| Option::<String>::None);
+        let mut file_status = use_signal(String::new);
+
+        let mut validation_issues = use_signal(Vec::<ValidationIssue>::new);
+        let mut diff_status = use_signal(|| Option::<EntryStatus>::None);
+        let mut encoding_status = use_signal(String::new);
+
+        let mut hybrid_preview = use_signal(Vec::<HybridEntry>::new);
+        let mut hybrid_error = use_signal(|| Option::<String>::None);
+
+        let mut loaded_strings = use_signal(|| Option::<StringsFile>::None);
+        let mut loaded_strings_kind = use_signal(|| Option::<StringsKind>::None);
+        let mut loaded_strings_path = use_signal(|| Option::<PathBuf>::None);
+
+        let mut loaded_plugin = use_signal(|| Option::<PluginFile>::None);
+        let mut loaded_plugin_path = use_signal(|| Option::<PathBuf>::None);
+        let mut loaded_esp_strings = use_signal(|| Option::<Vec<ExtractedString>>::None);
+
+        let initial_prefs = load_dictionary_prefs().unwrap_or_default();
+        let mut dict = use_signal(|| Option::<TranslationDictionary>::None);
+        let mut dict_source_lang = use_signal({
+            let value = initial_prefs.source_lang.clone();
+            move || value.clone()
+        });
+        let mut dict_target_lang = use_signal({
+            let value = initial_prefs.target_lang.clone();
+            move || value.clone()
+        });
+        let mut dict_root = use_signal({
+            let value = initial_prefs.root.clone();
+            move || value.clone()
+        });
+        let mut dict_status = use_signal(String::new);
+        let mut dict_prefs_error = use_signal(String::new);
+        let mut dict_build_summary = use_signal(|| Option::<DictionaryBuildSummary>::None);
+
+        let mut active_tab = use_signal(|| Tab::Home);
+
+        Self {
+            history,
+            state,
+            scroll_offset,
+            viewport_height,
+            edit_source,
+            edit_target,
+            xml_text,
+            xml_error,
+            file_status,
+            validation_issues,
+            diff_status,
+            encoding_status,
+            hybrid_preview,
+            hybrid_error,
+            loaded_strings,
+            loaded_strings_kind,
+            loaded_strings_path,
+            loaded_plugin,
+            loaded_plugin_path,
+            loaded_esp_strings,
+            dict,
+            dict_source_lang,
+            dict_target_lang,
+            dict_root,
+            dict_status,
+            dict_prefs_error,
+            dict_build_summary,
+            active_tab,
+        }
+    }
+
+    fn update<F>(&self, updater: F)
+    where
+        F: FnOnce(&Self),
+    {
+        updater(self);
+    }
+}
+
 fn main() {
     #[cfg(all(
         feature = "desktop",
@@ -165,66 +287,22 @@ fn main() {
 
 #[component]
 fn App() -> Element {
-    let mut history = use_signal(|| UndoStack::new(Vec::new()));
-    let mut state = use_signal(|| TwoPaneState::new(history.read().present().clone()));
+    let app = App::new();
 
-    let mut scroll_offset = use_signal(|| 0.0f32);
-    let mut viewport_height = use_signal(|| 520.0f32);
     let item_height = 64.0f32;
     let overscan = 8usize;
 
-    let mut edit_source = use_signal(String::new);
-    let mut edit_target = use_signal(String::new);
-
-    let mut xml_text = use_signal(String::new);
-    let mut xml_error = use_signal(|| Option::<String>::None);
-    let mut file_status = use_signal(String::new);
-
-    let mut validation_issues = use_signal(Vec::<ValidationIssue>::new);
-    let mut diff_status = use_signal(|| Option::<EntryStatus>::None);
-    let mut encoding_status = use_signal(String::new);
-
-    let mut hybrid_preview = use_signal(Vec::<HybridEntry>::new);
-    let mut hybrid_error = use_signal(|| Option::<String>::None);
-
-    let mut loaded_strings = use_signal(|| Option::<StringsFile>::None);
-    let mut loaded_strings_kind = use_signal(|| Option::<StringsKind>::None);
-    let mut loaded_strings_path = use_signal(|| Option::<PathBuf>::None);
-
-    let mut loaded_plugin = use_signal(|| Option::<PluginFile>::None);
-    let mut loaded_plugin_path = use_signal(|| Option::<PathBuf>::None);
-    let mut loaded_esp_strings = use_signal(|| Option::<Vec<ExtractedString>>::None);
-
-    let initial_prefs = load_dictionary_prefs().unwrap_or_default();
-    let mut dict = use_signal(|| Option::<TranslationDictionary>::None);
-    let mut dict_source_lang = use_signal({
-        let value = initial_prefs.source_lang.clone();
-        move || value.clone()
-    });
-    let mut dict_target_lang = use_signal({
-        let value = initial_prefs.target_lang.clone();
-        move || value.clone()
-    });
-    let mut dict_root = use_signal({
-        let value = initial_prefs.root.clone();
-        move || value.clone()
-    });
-    let mut dict_status = use_signal(String::new);
-    let mut dict_prefs_error = use_signal(String::new);
-    let mut dict_build_summary = use_signal(|| Option::<DictionaryBuildSummary>::None);
-
-    let mut active_tab = use_signal(|| Tab::Home);
-
+    let app_for_effect = app;
     use_effect(move || {
         let prefs = DictionaryPrefs {
-            source_lang: dict_source_lang(),
-            target_lang: dict_target_lang(),
-            root: dict_root(),
+            source_lang: (app_for_effect.dict_source_lang)(),
+            target_lang: (app_for_effect.dict_target_lang)(),
+            root: (app_for_effect.dict_root)(),
         };
-        match save_dictionary_prefs(&prefs) {
-            Ok(()) => dict_prefs_error.set(String::new()),
-            Err(err) => dict_prefs_error.set(format!("辞書設定保存失敗: {err}")),
-        }
+        app_for_effect.update(|app| match save_dictionary_prefs(&prefs) {
+            Ok(()) => app.dict_prefs_error.set(String::new()),
+            Err(err) => app.dict_prefs_error.set(format!("辞書設定保存失敗: {err}")),
+        });
     });
 
     #[cfg(all(
@@ -233,117 +311,121 @@ fn App() -> Element {
     ))]
     {
         use dioxus::desktop::use_muda_event_handler;
-        use_muda_event_handler(move |event| match event.id.as_ref() {
-            MENU_OPEN_PLUGIN => {
-                document::eval(
-                    "const el = document.getElementById('plugin-picker-native'); if (el) { el.click(); }",
-                );
-            }
-            MENU_OPEN_STRINGS => {
-                document::eval(
-                    "const el = document.getElementById('strings-picker-native'); if (el) { el.click(); }",
-                );
-            }
-            MENU_XML_EXPORT => {
-                xml_text.set(export_entries(state.read().entries()));
-                xml_error.set(None);
-                file_status.set("XMLを書き出しました（エディタ）".to_string());
-            }
-            MENU_XML_APPLY => {
-                document::eval(
-                    "const el = document.getElementById('xml-picker-native'); if (el) { el.click(); }",
-                );
-            }
-            MENU_SAVE_OVERWRITE => match save_overwrite(
-                state.read().entries(),
-                loaded_strings(),
-                loaded_strings_kind(),
-                loaded_strings_path(),
-                loaded_plugin(),
-                loaded_plugin_path(),
-                loaded_esp_strings(),
-            ) {
-                Ok(path) => file_status.set(format!("保存: {}", path.display())),
-                Err(err) => file_status.set(format!("保存失敗: {err}")),
-            },
-            MENU_SAVE_AS => match save_as(
-                state.read().entries(),
-                loaded_strings(),
-                loaded_strings_kind(),
-                loaded_strings_path(),
-                loaded_plugin(),
-                loaded_plugin_path(),
-                loaded_esp_strings(),
-            ) {
-                Ok(path) => file_status.set(format!("別名保存: {}", path.display())),
-                Err(err) => file_status.set(format!("別名保存失敗: {err}")),
-            },
-            MENU_DICT_BUILD => {
-                let root = PathBuf::from(dict_root());
-                match TranslationDictionary::build_from_strings_dir(
-                    &root,
-                    &dict_source_lang(),
-                    &dict_target_lang(),
+        use_muda_event_handler(move |event| {
+            app.update(|app| match event.id.as_ref() {
+                MENU_OPEN_PLUGIN => {
+                    document::eval(
+                        "const el = document.getElementById('plugin-picker-native'); if (el) { el.click(); }",
+                    );
+                }
+                MENU_OPEN_STRINGS => {
+                    document::eval(
+                        "const el = document.getElementById('strings-picker-native'); if (el) { el.click(); }",
+                    );
+                }
+                MENU_XML_EXPORT => {
+                    app.xml_text.set(export_entries(app.state.read().entries()));
+                    app.xml_error.set(None);
+                    app.file_status.set("XMLを書き出しました（エディタ）".to_string());
+                }
+                MENU_XML_APPLY => {
+                    document::eval(
+                        "const el = document.getElementById('xml-picker-native'); if (el) { el.click(); }",
+                    );
+                }
+                MENU_SAVE_OVERWRITE => match save_overwrite(
+                    app.state.read().entries(),
+                    (app.loaded_strings)(),
+                    (app.loaded_strings_kind)(),
+                    (app.loaded_strings_path)(),
+                    (app.loaded_plugin)(),
+                    (app.loaded_plugin_path)(),
+                    (app.loaded_esp_strings)(),
                 ) {
-                    Ok((built, stats)) => {
-                        let pairs = built.len();
-                        dict.set(Some(built));
-                        dict_build_summary.set(Some(DictionaryBuildSummary {
-                            built_at_unix: now_unix_seconds(),
-                            pairs,
-                            files_seen: stats.files_seen,
-                            file_pairs: stats.file_pairs,
-                        }));
-                        dict_status.set(format!(
-                            "辞書構築: pairs={} files={} pair_files={}",
-                            pairs, stats.files_seen, stats.file_pairs
-                        ));
-                    }
-                    Err(err) => dict_status.set(format!("辞書構築失敗: {err}")),
-                }
-            }
-            MENU_QUICK_AUTO => {
-                let selected = state.read().selected_key().map(|s| s.to_string());
-                let entries = state.read().entries().to_vec();
-                let result = {
-                    let current = dict.read();
-                    apply_quick_auto_selection(current.as_ref(), &entries, selected)
-                };
-                match result {
-                    Ok((next, updated)) => {
-                        if updated > 0 {
-                            history.write().apply(next.clone());
-                            state.write().set_entries(next);
+                    Ok(path) => app.file_status.set(format!("保存: {}", path.display())),
+                    Err(err) => app.file_status.set(format!("保存失敗: {err}")),
+                },
+                MENU_SAVE_AS => match save_as(
+                    app.state.read().entries(),
+                    (app.loaded_strings)(),
+                    (app.loaded_strings_kind)(),
+                    (app.loaded_strings_path)(),
+                    (app.loaded_plugin)(),
+                    (app.loaded_plugin_path)(),
+                    (app.loaded_esp_strings)(),
+                ) {
+                    Ok(path) => app.file_status.set(format!("別名保存: {}", path.display())),
+                    Err(err) => app.file_status.set(format!("別名保存失敗: {err}")),
+                },
+                MENU_DICT_BUILD => {
+                    let root = PathBuf::from((app.dict_root)());
+                    match TranslationDictionary::build_from_strings_dir(
+                        &root,
+                        &(app.dict_source_lang)(),
+                        &(app.dict_target_lang)(),
+                    ) {
+                        Ok((built, stats)) => {
+                            let pairs = built.len();
+                            app.dict.set(Some(built));
+                            app.dict_build_summary.set(Some(DictionaryBuildSummary {
+                                built_at_unix: now_unix_seconds(),
+                                pairs,
+                                files_seen: stats.files_seen,
+                                file_pairs: stats.file_pairs,
+                            }));
+                            app.dict_status.set(format!(
+                                "辞書構築: pairs={} files={} pair_files={}",
+                                pairs, stats.files_seen, stats.file_pairs
+                            ));
                         }
-                        dict_status.set(format!("Quick自動翻訳: updated={updated}"));
+                        Err(err) => app.dict_status.set(format!("辞書構築失敗: {err}")),
                     }
-                    Err(err) => dict_status.set(err.to_string()),
                 }
-            }
-            MENU_LANG_PANEL => active_tab.set(Tab::Lang),
-            MENU_LANG_RESET => {
-                dict_source_lang.set(DEFAULT_DICT_SOURCE_LANG.to_string());
-                dict_target_lang.set(DEFAULT_DICT_TARGET_LANG.to_string());
-                dict_root.set(DEFAULT_DICT_ROOT.to_string());
-                dict_status.set(format!(
-                    "言語ペアを {} -> {} に設定",
-                    DEFAULT_DICT_SOURCE_LANG, DEFAULT_DICT_TARGET_LANG
-                ));
-            }
-            MENU_UNDO => {
-                if history.write().undo() {
-                    let entries = history.read().present().clone();
-                    state.write().set_entries(entries);
+                MENU_QUICK_AUTO => {
+                    let selected = app.state.read().selected_key().map(|s| s.to_string());
+                    let entries = app.state.read().entries().to_vec();
+                    let result = {
+                        let current = app.dict.read();
+                        apply_quick_auto_selection(current.as_ref(), &entries, selected)
+                    };
+                    match result {
+                        Ok((next, updated)) => {
+                            if updated > 0 {
+                                app.history.write().apply(next.clone());
+                                app.state.write().set_entries(next);
+                            }
+                            app.dict_status.set(format!("Quick自動翻訳: updated={updated}"));
+                        }
+                        Err(err) => app.dict_status.set(err.to_string()),
+                    }
                 }
-            }
-            MENU_REDO => {
-                if history.write().redo() {
-                    let entries = history.read().present().clone();
-                    state.write().set_entries(entries);
+                MENU_LANG_PANEL => app.active_tab.set(Tab::Lang),
+                MENU_LANG_RESET => {
+                    app.dict_source_lang
+                        .set(DEFAULT_DICT_SOURCE_LANG.to_string());
+                    app.dict_target_lang
+                        .set(DEFAULT_DICT_TARGET_LANG.to_string());
+                    app.dict_root.set(DEFAULT_DICT_ROOT.to_string());
+                    app.dict_status.set(format!(
+                        "言語ペアを {} -> {} に設定",
+                        DEFAULT_DICT_SOURCE_LANG, DEFAULT_DICT_TARGET_LANG
+                    ));
                 }
-            }
-            MENU_LOG_TAB => active_tab.set(Tab::Log),
-            _ => {}
+                MENU_UNDO => {
+                    if app.history.write().undo() {
+                        let entries = app.history.read().present().clone();
+                        app.state.write().set_entries(entries);
+                    }
+                }
+                MENU_REDO => {
+                    if app.history.write().redo() {
+                        let entries = app.history.read().present().clone();
+                        app.state.write().set_entries(entries);
+                    }
+                }
+                MENU_LOG_TAB => app.active_tab.set(Tab::Log),
+                _ => {}
+            });
         });
     }
 
@@ -357,34 +439,39 @@ fn App() -> Element {
             if hotkey_state != HotKeyState::Pressed {
                 return;
             }
-            let selected = state.read().selected_key().map(|s| s.to_string());
-            let entries = state.read().entries().to_vec();
-            let result = {
-                let current = dict.read();
-                apply_quick_auto_selection(current.as_ref(), &entries, selected)
-            };
-            match result {
-                Ok((next, updated)) => {
-                    if updated > 0 {
-                        history.write().apply(next.clone());
-                        state.write().set_entries(next);
+            app.update(|app| {
+                let selected = app.state.read().selected_key().map(|s| s.to_string());
+                let entries = app.state.read().entries().to_vec();
+                let result = {
+                    let current = app.dict.read();
+                    apply_quick_auto_selection(current.as_ref(), &entries, selected)
+                };
+                match result {
+                    Ok((next, updated)) => {
+                        if updated > 0 {
+                            app.history.write().apply(next.clone());
+                            app.state.write().set_entries(next);
+                        }
+                        app.dict_status
+                            .set(format!("Quick自動翻訳(Ctrl+R): updated={updated}"));
                     }
-                    dict_status.set(format!("Quick自動翻訳(Ctrl+R): updated={updated}"));
+                    Err(err) => app.dict_status.set(err.to_string()),
                 }
-                Err(err) => dict_status.set(err.to_string()),
-            }
+            });
         }) {
-            dict_status.set(format!("ショートカット登録失敗: {err:?}"));
+            app.update(|app| {
+                app.dict_status.set(format!("ショートカット登録失敗: {err:?}"));
+            });
         }
     }
 
-    let selected_key = state.read().selected_key().map(|s| s.to_string());
-    let selected_entry = state.read().selected_entry().cloned();
-    let query = state.read().query().to_string();
+    let selected_key = app.state.read().selected_key().map(|s| s.to_string());
+    let selected_entry = app.state.read().selected_entry().cloned();
+    let query = app.state.read().query().to_string();
 
     // Rebuild heavy derived data only when search/entries change, not on scroll updates.
     let filtered_snapshot = use_memo(move || {
-        let entries = state.read().filtered_entries().to_vec();
+        let entries = app.state.read().filtered_entries().to_vec();
         let counts = count_channels(&entries);
         FilterSnapshot { entries, counts }
     });
@@ -396,8 +483,8 @@ fn App() -> Element {
     let window = virtual_window(
         filtered_len,
         item_height,
-        *viewport_height.read(),
-        *scroll_offset.read(),
+        *app.viewport_height.read(),
+        *app.scroll_offset.read(),
         overscan,
     );
     let rows = {
@@ -450,32 +537,43 @@ fn App() -> Element {
                     .unwrap_or("")
                     .to_ascii_lowercase();
                 if ext != "xml" {
-                    file_status.set(format!("drop ignored (not xml): {}", path.display()));
+                    app.update(|app| {
+                        app.file_status
+                            .set(format!("drop ignored (not xml): {}", path.display()));
+                    });
                     return;
                 }
                 match file.read_string().await {
                     Ok(contents) => {
-                        xml_text.set(contents.clone());
-                        let current_entries = state.read().entries().to_vec();
+                        app.update(|app| {
+                            app.xml_text.set(contents.clone());
+                        });
+                        let current_entries = app.state.read().entries().to_vec();
                         match apply_xml_payload(&current_entries, &contents) {
                             Ok((merged, stats)) => {
-                                if stats.updated > 0 {
-                                    history.write().apply(merged.clone());
-                                    state.write().set_entries(merged);
-                                }
-                                file_status.set(format!(
-                                    "XML適用(drop): updated={} unchanged={} missing={}",
-                                    stats.updated, stats.unchanged, stats.missing
-                                ));
-                                xml_error.set(None);
+                                app.update(|app| {
+                                    if stats.updated > 0 {
+                                        app.history.write().apply(merged.clone());
+                                        app.state.write().set_entries(merged);
+                                    }
+                                    app.file_status.set(format!(
+                                        "XML適用(drop): updated={} unchanged={} missing={}",
+                                        stats.updated, stats.unchanged, stats.missing
+                                    ));
+                                    app.xml_error.set(None);
+                                });
                             }
                             Err(err) => {
-                                xml_error.set(Some(err.clone()));
-                                file_status.set(format!("XML適用失敗(drop): {err}"));
+                                app.update(|app| {
+                                    app.xml_error.set(Some(err.clone()));
+                                    app.file_status.set(format!("XML適用失敗(drop): {err}"));
+                                });
                             }
                         }
                     }
-                    Err(err) => file_status.set(format!("XML read error (drop): {err}")),
+                    Err(err) => app.update(|app| {
+                        app.file_status.set(format!("XML read error (drop): {err}"));
+                    }),
                 }
             },
             div { class: "toolbar",
@@ -488,48 +586,76 @@ fn App() -> Element {
                     value: "{query}",
                     placeholder: "原文/訳文/ID検索...",
                     oninput: move |e| {
-                        state.write().set_query(&e.value());
-                        scroll_offset.set(0.0);
+                        app.update(|app| {
+                            app.state.write().set_query(&e.value());
+                            app.scroll_offset.set(0.0);
+                        });
                     },
                 }
                 button {
                     class: "tool-btn",
                     onclick: move |_| {
-                        let Some(entry) = state.read().selected_entry().cloned() else {
-                            validation_issues.set(Vec::new());
-                            return;
-                        };
-                        let mut issues = Vec::new();
-                        issues.extend(validate_braced_placeholders(&entry.key, &edit_source(), &edit_target()));
-                        issues.extend(validate_printf_placeholders(&entry.key, &edit_source(), &edit_target()));
-                        issues.extend(validate_alias_tags(&entry.key, &edit_source(), &edit_target()));
-                        validation_issues.set(issues);
+                        app.update(|app| {
+                            let Some(entry) = app.state.read().selected_entry().cloned() else {
+                                app.validation_issues.set(Vec::new());
+                                return;
+                            };
+                            let edit_source = (app.edit_source)();
+                            let edit_target = (app.edit_target)();
+                            let mut issues = Vec::new();
+                            issues.extend(validate_braced_placeholders(
+                                &entry.key,
+                                &edit_source,
+                                &edit_target,
+                            ));
+                            issues.extend(validate_printf_placeholders(
+                                &entry.key,
+                                &edit_source,
+                                &edit_target,
+                            ));
+                            issues.extend(validate_alias_tags(
+                                &entry.key,
+                                &edit_source,
+                                &edit_target,
+                            ));
+                            app.validation_issues.set(issues);
+                        });
                     },
                     "Validate"
                 }
                 button {
                     class: "tool-btn",
                     onclick: move |_| {
-                        let Some(entry) = state.read().selected_entry().cloned() else {
-                            diff_status.set(None);
-                            return;
-                        };
-                        let mut d = DiffEntry::new(&entry.key, &entry.source_text, &entry.target_text);
-                        update_source(&mut d, &edit_source());
-                        diff_status.set(Some(d.status));
+                        app.update(|app| {
+                            let Some(entry) = app.state.read().selected_entry().cloned() else {
+                                app.diff_status.set(None);
+                                return;
+                            };
+                            let mut d =
+                                DiffEntry::new(&entry.key, &entry.source_text, &entry.target_text);
+                            update_source(&mut d, &(app.edit_source)());
+                            app.diff_status.set(Some(d.status));
+                        });
                     },
                     "Diff"
                 }
                 button {
                     class: "tool-btn",
                     onclick: move |_| {
-                        let msg = match encode(&edit_target(), Encoding::Latin1)
-                            .and_then(|bytes| decode(&bytes, Encoding::Latin1)) {
-                            Ok(_) => "Latin1 OK".to_string(),
-                            Err(EncodingError::UnrepresentableChar) => "Latin1 error: unrepresentable".to_string(),
-                            Err(EncodingError::InvalidUtf8) => "Latin1 error: invalid utf8".to_string(),
-                        };
-                        encoding_status.set(msg);
+                        app.update(|app| {
+                            let msg = match encode(&(app.edit_target)(), Encoding::Latin1)
+                                .and_then(|bytes| decode(&bytes, Encoding::Latin1))
+                            {
+                                Ok(_) => "Latin1 OK".to_string(),
+                                Err(EncodingError::UnrepresentableChar) => {
+                                    "Latin1 error: unrepresentable".to_string()
+                                }
+                                Err(EncodingError::InvalidUtf8) => {
+                                    "Latin1 error: invalid utf8".to_string()
+                                }
+                            };
+                            app.encoding_status.set(msg);
+                        });
                     },
                     "Encoding"
                 }
@@ -557,12 +683,14 @@ fn App() -> Element {
                         let next_viewport = data.client_height() as f32;
                         // Virtual window only needs to advance when crossing the next row boundary.
                         let snapped_scroll = (next_scroll / item_height).floor() * item_height;
-                        if (snapped_scroll - *scroll_offset.read()).abs() >= 0.5 {
-                            scroll_offset.set(snapped_scroll);
-                        }
-                        if (next_viewport - *viewport_height.read()).abs() >= 0.5 {
-                            viewport_height.set(next_viewport);
-                        }
+                        app.update(|app| {
+                            if (snapped_scroll - *app.scroll_offset.read()).abs() >= 0.5 {
+                                app.scroll_offset.set(snapped_scroll);
+                            }
+                            if (next_viewport - *app.viewport_height.read()).abs() >= 0.5 {
+                                app.viewport_height.set(next_viewport);
+                            }
+                        });
                     },
                     Spacer { window: window, position: SpacerPosition::Top }
                     for row in rows {
@@ -570,9 +698,11 @@ fn App() -> Element {
                             key: "{row.key}",
                             class: if row.selected { "grid-row sel" } else { "grid-row" },
                             onclick: move |_| {
-                                state.write().select(&row.key);
-                                edit_source.set(row.source_text.clone());
-                                edit_target.set(row.target_text.clone());
+                                app.update(|app| {
+                                    app.state.write().select(&row.key);
+                                    app.edit_source.set(row.source_text.clone());
+                                    app.edit_target.set(row.target_text.clone());
+                                });
                             },
                             span { class: "c-edid", "{row.edid}" }
                             span { class: "c-id", "{row.record_id}" }
@@ -588,62 +718,84 @@ fn App() -> Element {
             div { class: "tabs",
                 for (tab, label) in Tab::all() {
                     button {
-                        class: if active_tab() == tab { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(tab),
+                        class: if (app.active_tab)() == tab { "tab active" } else { "tab" },
+                        onclick: move |_| app.update(|app| app.active_tab.set(tab)),
                         "{label}"
                     }
                 }
             }
 
             div { class: "panel",
-                if active_tab() == Tab::Home {
+                if (app.active_tab)() == Tab::Home {
                     if let Some(entry) = selected_entry {
                         div { class: "editor",
                             p { class: "k", "Key: {entry.key}" }
                             label { "原文" }
                             textarea {
                                 class: "txt",
-                                value: "{edit_source}",
-                                oninput: move |e| edit_source.set(e.value()),
+                                value: "{app.edit_source}",
+                                oninput: move |e| {
+                                    app.update(|app| app.edit_source.set(e.value()));
+                                },
                             }
                             label { "訳文" }
                             textarea {
                                 class: "txt",
-                                value: "{edit_target}",
-                                oninput: move |e| edit_target.set(e.value()),
+                                value: "{app.edit_target}",
+                                oninput: move |e| {
+                                    app.update(|app| app.edit_target.set(e.value()));
+                                },
                             }
                             div { class: "actions",
                                 button {
                                     class: "tool-btn",
                                     disabled: selected_key.is_none(),
                                     onclick: move |_| {
-                                        let Some(key) = state.read().selected_key().map(|s| s.to_string()) else { return; };
-                                        let next = {
-                                            let mut s = state.write();
-                                            if s.update_entry(&key, &edit_source(), &edit_target()) {
-                                                Some(s.entries().to_vec())
-                                            } else {
-                                                None
+                                        app.update(|app| {
+                                            let Some(key) = app
+                                                .state
+                                                .read()
+                                                .selected_key()
+                                                .map(|s| s.to_string())
+                                            else {
+                                                return;
+                                            };
+                                            let next = {
+                                                let mut s = app.state.write();
+                                                if s.update_entry(
+                                                    &key,
+                                                    &(app.edit_source)(),
+                                                    &(app.edit_target)(),
+                                                ) {
+                                                    Some(s.entries().to_vec())
+                                                } else {
+                                                    None
+                                                }
+                                            };
+                                            if let Some(entries) = next {
+                                                app.history.write().apply(entries);
                                             }
-                                        };
-                                        if let Some(entries) = next {
-                                            history.write().apply(entries);
-                                        }
+                                        });
                                     },
                                     "Apply Edit"
                                 }
                                 button {
                                     class: "tool-btn",
                                     onclick: move |_| {
-                                        let p = loaded_plugin().clone();
-                                        let s = loaded_strings().clone();
-                                        match (p, s) {
-                                            (Some(plugin), Some(strings)) => {
-                                                hybrid_preview.set(build_hybrid_entries(&plugin, &strings));
-                                                hybrid_error.set(None);
+                                        app.update(|app| {
+                                            let p = (app.loaded_plugin)();
+                                            let s = (app.loaded_strings)();
+                                            match (p, s) {
+                                                (Some(plugin), Some(strings)) => {
+                                                    app.hybrid_preview
+                                                        .set(build_hybrid_entries(&plugin, &strings));
+                                                    app.hybrid_error.set(None);
+                                                }
+                                                _ => app.hybrid_error.set(Some(
+                                                    "Plugin/Stringsを先に読み込んでください".to_string(),
+                                                )),
                                             }
-                                            _ => hybrid_error.set(Some("Plugin/Stringsを先に読み込んでください".to_string())),
-                                        }
+                                        });
                                     },
                                     "Build Hybrid"
                                 }
@@ -652,22 +804,24 @@ fn App() -> Element {
                     } else {
                         p { "行を選択してください。" }
                     }
-                } else if active_tab() == Tab::Log {
+                } else if (app.active_tab)() == Tab::Log {
                     div { class: "log",
-                        if !file_status().is_empty() { p { "{file_status}" } }
-                        if !dict_status().is_empty() { p { "{dict_status}" } }
-                        if !dict_prefs_error().is_empty() { p { class: "err", "{dict_prefs_error}" } }
-                        if let Some(summary) = dict_build_summary() {
+                        if !(app.file_status)().is_empty() { p { "{app.file_status}" } }
+                        if !(app.dict_status)().is_empty() { p { "{app.dict_status}" } }
+                        if !(app.dict_prefs_error)().is_empty() {
+                            p { class: "err", "{app.dict_prefs_error}" }
+                        }
+                        if let Some(summary) = (app.dict_build_summary)() {
                             p {
                                 "辞書情報: built_at(unix)={summary.built_at_unix} pairs={summary.pairs} files={summary.files_seen} pair_files={summary.file_pairs}"
                             }
                         }
-                        if let Some(err) = xml_error() { p { class: "err", "{err}" } }
-                        if let Some(err) = hybrid_error() { p { class: "err", "{err}" } }
-                        if let Some(status) = diff_status() { p { "Diff status: {status:?}" } }
-                        if !encoding_status().is_empty() { p { "{encoding_status}" } }
-                        if !validation_issues().is_empty() {
-                            for issue in validation_issues() {
+                        if let Some(err) = (app.xml_error)() { p { class: "err", "{err}" } }
+                        if let Some(err) = (app.hybrid_error)() { p { class: "err", "{err}" } }
+                        if let Some(status) = (app.diff_status)() { p { "Diff status: {status:?}" } }
+                        if !(app.encoding_status)().is_empty() { p { "{app.encoding_status}" } }
+                        if !(app.validation_issues)().is_empty() {
+                            for issue in (app.validation_issues)() {
                                 p { "{issue.rule_id}: {issue.message}" }
                             }
                         }
@@ -684,36 +838,44 @@ fn App() -> Element {
                     label { class: "io",
                         "Dict Src"
                         input {
-                            value: "{dict_source_lang}",
-                            oninput: move |e| dict_source_lang.set(e.value()),
+                            value: "{app.dict_source_lang}",
+                            oninput: move |e| {
+                                app.update(|app| app.dict_source_lang.set(e.value()));
+                            },
                         }
                     }
                     label { class: "io",
                         "Dict Dst"
                         input {
-                            value: "{dict_target_lang}",
-                            oninput: move |e| dict_target_lang.set(e.value()),
+                            value: "{app.dict_target_lang}",
+                            oninput: move |e| {
+                                app.update(|app| app.dict_target_lang.set(e.value()));
+                            },
                         }
                     }
                     label { class: "io io-wide",
                         "Dict Root"
                         input {
-                            value: "{dict_root}",
-                            oninput: move |e| dict_root.set(e.value()),
+                            value: "{app.dict_root}",
+                            oninput: move |e| {
+                                app.update(|app| app.dict_root.set(e.value()));
+                            },
                         }
                     }
-                    if !dict_status().is_empty() {
-                        p { class: "inline", "{dict_status}" }
+                    if !(app.dict_status)().is_empty() {
+                        p { class: "inline", "{app.dict_status}" }
                     }
-                    if !dict_prefs_error().is_empty() {
-                        p { class: "inline err", "{dict_prefs_error}" }
+                    if !(app.dict_prefs_error)().is_empty() {
+                        p { class: "inline err", "{app.dict_prefs_error}" }
                     }
                 }
 
                 textarea {
                     class: "xml",
-                    value: "{xml_text}",
-                    oninput: move |e| xml_text.set(e.value()),
+                    value: "{app.xml_text}",
+                    oninput: move |e| {
+                        app.update(|app| app.xml_text.set(e.value()));
+                    },
                 }
 
                 input {
@@ -725,27 +887,35 @@ fn App() -> Element {
                         let Some(file) = event.files().into_iter().next() else { return; };
                         match file.read_string().await {
                             Ok(contents) => {
-                                xml_text.set(contents.clone());
-                                let current_entries = state.read().entries().to_vec();
+                                app.update(|app| {
+                                    app.xml_text.set(contents.clone());
+                                });
+                                let current_entries = app.state.read().entries().to_vec();
                                 match apply_xml_payload(&current_entries, &contents) {
                                     Ok((merged, stats)) => {
-                                        if stats.updated > 0 {
-                                            history.write().apply(merged.clone());
-                                            state.write().set_entries(merged);
-                                        }
-                                        file_status.set(format!(
-                                            "XML適用: updated={} unchanged={} missing={}",
-                                            stats.updated, stats.unchanged, stats.missing
-                                        ));
-                                        xml_error.set(None);
+                                        app.update(|app| {
+                                            if stats.updated > 0 {
+                                                app.history.write().apply(merged.clone());
+                                                app.state.write().set_entries(merged);
+                                            }
+                                            app.file_status.set(format!(
+                                                "XML適用: updated={} unchanged={} missing={}",
+                                                stats.updated, stats.unchanged, stats.missing
+                                            ));
+                                            app.xml_error.set(None);
+                                        });
                                     }
                                     Err(err) => {
-                                        xml_error.set(Some(err.clone()));
-                                        file_status.set(format!("XML適用失敗: {err}"));
+                                        app.update(|app| {
+                                            app.xml_error.set(Some(err.clone()));
+                                            app.file_status.set(format!("XML適用失敗: {err}"));
+                                        });
                                     }
                                 }
                             }
-                            Err(err) => file_status.set(format!("XML read error: {err}")),
+                            Err(err) => app.update(|app| {
+                                app.file_status.set(format!("XML read error: {err}"));
+                            }),
                         }
                     },
                 }
@@ -760,13 +930,18 @@ fn App() -> Element {
                         let path = file.path();
                         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                         let Some(kind) = StringsKind::from_extension(ext) else {
-                            file_status.set(format!("unsupported strings extension: {ext}"));
+                            app.update(|app| {
+                                app.file_status
+                                    .set(format!("unsupported strings extension: {ext}"));
+                            });
                             return;
                         };
                         let bytes = match file.read_bytes().await {
                             Ok(v) => v,
                             Err(err) => {
-                                file_status.set(format!("Strings read error: {err}"));
+                                app.update(|app| {
+                                    app.file_status.set(format!("Strings read error: {err}"));
+                                });
                                 return;
                             }
                         };
@@ -786,17 +961,21 @@ fn App() -> Element {
                                         target_text: String::new(),
                                     })
                                     .collect::<Vec<_>>();
-                                history.write().apply(entries.clone());
-                                state.write().set_entries(entries);
-                                loaded_strings.set(Some(strings));
-                                loaded_strings_kind.set(Some(kind));
-                                loaded_strings_path.set(Some(path));
-                                loaded_plugin.set(None);
-                                loaded_plugin_path.set(None);
-                                loaded_esp_strings.set(None);
-                                file_status.set("Stringsを読み込みました".to_string());
+                                app.update(|app| {
+                                    app.history.write().apply(entries.clone());
+                                    app.state.write().set_entries(entries);
+                                    app.loaded_strings.set(Some(strings));
+                                    app.loaded_strings_kind.set(Some(kind));
+                                    app.loaded_strings_path.set(Some(path));
+                                    app.loaded_plugin.set(None);
+                                    app.loaded_plugin_path.set(None);
+                                    app.loaded_esp_strings.set(None);
+                                    app.file_status.set("Stringsを読み込みました".to_string());
+                                });
                             }
-                            Err(err) => file_status.set(format!("Strings parse error: {err:?}")),
+                            Err(err) => app.update(|app| {
+                                app.file_status.set(format!("Strings parse error: {err:?}"));
+                            }),
                         }
                     },
                 }
@@ -823,32 +1002,42 @@ fn App() -> Element {
                                                 target_text: String::new(),
                                             })
                                             .collect::<Vec<_>>();
-                                        history.write().apply(entries.clone());
-                                        state.write().set_entries(entries);
-                                        loaded_plugin.set(Some(plugin));
-                                        loaded_plugin_path.set(Some(path));
-                                        loaded_esp_strings.set(None);
-                                        loaded_strings.set(None);
-                                        loaded_strings_kind.set(None);
-                                        loaded_strings_path.set(None);
-                                        file_status.set("xtpluginを読み込みました".to_string());
+                                        app.update(|app| {
+                                            app.history.write().apply(entries.clone());
+                                            app.state.write().set_entries(entries);
+                                            app.loaded_plugin.set(Some(plugin));
+                                            app.loaded_plugin_path.set(Some(path));
+                                            app.loaded_esp_strings.set(None);
+                                            app.loaded_strings.set(None);
+                                            app.loaded_strings_kind.set(None);
+                                            app.loaded_strings_path.set(None);
+                                            app.file_status.set("xtpluginを読み込みました".to_string());
+                                        });
                                     }
-                                    Err(err) => file_status.set(format!("xtplugin parse error: {err:?}")),
+                                    Err(err) => app.update(|app| {
+                                        app.file_status.set(format!("xtplugin parse error: {err:?}"));
+                                    }),
                                 },
-                                Err(err) => file_status.set(format!("xtplugin read error: {err}")),
+                                Err(err) => app.update(|app| {
+                                    app.file_status.set(format!("xtplugin read error: {err}"));
+                                }),
                             }
                         } else {
                             let bytes = match file.read_bytes().await {
                                 Ok(v) => v,
                                 Err(err) => {
-                                    file_status.set(format!("plugin read error: {err}"));
+                                    app.update(|app| {
+                                        app.file_status.set(format!("plugin read error: {err}"));
+                                    });
                                     return;
                                 }
                             };
                             let workspace_root = workspace_root_from_plugin(&path);
                             let entries = match extract_esp_strings(&path, &workspace_root, Some("english")) {
                                 Ok(strings) => {
-                                    loaded_esp_strings.set(Some(strings.clone()));
+                                    app.update(|app| {
+                                        app.loaded_esp_strings.set(Some(strings.clone()));
+                                    });
                                     strings
                                         .iter()
                                         .map(|s| Entry {
@@ -859,7 +1048,11 @@ fn App() -> Element {
                                         .collect::<Vec<_>>()
                                 }
                                 Err(err) => {
-                                    file_status.set(format!("ESP parse error (fallback): {err}"));
+                                    app.update(|app| {
+                                        app.file_status.set(format!(
+                                            "ESP parse error (fallback): {err}"
+                                        ));
+                                    });
                                     extract_null_terminated_utf8(&bytes, 4)
                                         .into_iter()
                                         .map(|x| Entry {
@@ -870,14 +1063,16 @@ fn App() -> Element {
                                         .collect::<Vec<_>>()
                                 }
                             };
-                            history.write().apply(entries.clone());
-                            state.write().set_entries(entries);
-                            loaded_plugin.set(None);
-                            loaded_plugin_path.set(Some(path));
-                            loaded_strings.set(None);
-                            loaded_strings_kind.set(None);
-                            loaded_strings_path.set(None);
-                            file_status.set("Pluginを読み込みました".to_string());
+                            app.update(|app| {
+                                app.history.write().apply(entries.clone());
+                                app.state.write().set_entries(entries);
+                                app.loaded_plugin.set(None);
+                                app.loaded_plugin_path.set(Some(path));
+                                app.loaded_strings.set(None);
+                                app.loaded_strings_kind.set(None);
+                                app.loaded_strings_path.set(None);
+                                app.file_status.set("Pluginを読み込みました".to_string());
+                            });
                         }
                     },
                 }
@@ -885,8 +1080,8 @@ fn App() -> Element {
 
             div { class: "status",
                 div { class: "meter", div { class: "meter-fill", style: "width: {ratio}%" } }
-                div { class: "s", "[{dict_source_lang}] -> [{dict_target_lang}]" }
-                div { class: "s", "{file_status}" }
+                div { class: "s", "[{app.dict_source_lang}] -> [{app.dict_target_lang}]" }
+                div { class: "s", "{app.file_status}" }
                 div { class: "s", "{counts.translated}/{counts.total}" }
             }
         }
