@@ -30,20 +30,6 @@ const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
-const MENU_XML_EXPORT: &str = "file.xml_export";
-const MENU_XML_APPLY: &str = "file.xml_apply";
-const MENU_OPEN_PLUGIN: &str = "file.open_plugin";
-const MENU_OPEN_STRINGS: &str = "file.open_strings";
-const MENU_SAVE_OVERWRITE: &str = "file.save_overwrite";
-const MENU_SAVE_AS: &str = "file.save_as";
-const MENU_DICT_BUILD: &str = "translate.dict_build";
-const MENU_QUICK_AUTO: &str = "translate.quick_auto";
-const MENU_LANG_PANEL: &str = "options.lang_panel";
-const MENU_LANG_RESET: &str = "options.lang_reset";
-const MENU_UNDO: &str = "tools.undo";
-const MENU_REDO: &str = "tools.redo";
-const MENU_LOG_TAB: &str = "tools.log_tab";
-
 const DEFAULT_DICT_SOURCE_LANG: &str = "english";
 const DEFAULT_DICT_TARGET_LANG: &str = "japanese";
 const DEFAULT_DICT_ROOT: &str = "./Data/Strings/Translations";
@@ -145,16 +131,175 @@ enum SpacerPosition {
     Bottom,
 }
 
+#[derive(Clone, Copy)]
+enum MenuAction {
+    OpenPlugin,
+    OpenStrings,
+    XmlExport,
+    XmlApply,
+    SaveOverwrite,
+    SaveAs,
+    DictBuild,
+    QuickAuto,
+    LangPanel,
+    LangReset,
+    Undo,
+    Redo,
+    LogTab,
+}
+
+#[derive(Clone, Copy)]
+struct MenuContext {
+    history: Signal<UndoStack>,
+    state: Signal<TwoPaneState>,
+    dict: Signal<Option<TranslationDictionary>>,
+    dict_root: Signal<String>,
+    dict_source_lang: Signal<String>,
+    dict_target_lang: Signal<String>,
+    dict_status: Signal<String>,
+    dict_build_summary: Signal<Option<DictionaryBuildSummary>>,
+    xml_text: Signal<String>,
+    xml_error: Signal<Option<String>>,
+    file_status: Signal<String>,
+    loaded_strings: Signal<Option<StringsFile>>,
+    loaded_strings_kind: Signal<Option<StringsKind>>,
+    loaded_strings_path: Signal<Option<PathBuf>>,
+    loaded_plugin: Signal<Option<PluginFile>>,
+    loaded_plugin_path: Signal<Option<PathBuf>>,
+    loaded_esp_strings: Signal<Option<Vec<ExtractedString>>>,
+    active_tab: Signal<Tab>,
+}
+
+impl MenuContext {
+    fn handle(&self, action: MenuAction) {
+        match action {
+            MenuAction::OpenPlugin => {
+                document::eval(
+                    "const el = document.getElementById('plugin-picker-native'); if (el) { el.click(); }",
+                );
+            }
+            MenuAction::OpenStrings => {
+                document::eval(
+                    "const el = document.getElementById('strings-picker-native'); if (el) { el.click(); }",
+                );
+            }
+            MenuAction::XmlExport => {
+                self.xml_text.set(export_entries(self.state.read().entries()));
+                self.xml_error.set(None);
+                self.file_status.set("XMLを書き出しました（エディタ）".to_string());
+            }
+            MenuAction::XmlApply => {
+                document::eval(
+                    "const el = document.getElementById('xml-picker-native'); if (el) { el.click(); }",
+                );
+            }
+            MenuAction::SaveOverwrite => {
+                match save_overwrite(
+                    self.state.read().entries(),
+                    self.loaded_strings(),
+                    self.loaded_strings_kind(),
+                    self.loaded_strings_path(),
+                    self.loaded_plugin(),
+                    self.loaded_plugin_path(),
+                    self.loaded_esp_strings(),
+                ) {
+                    Ok(path) => self.file_status.set(format!("保存: {}", path.display())),
+                    Err(err) => self.file_status.set(format!("保存失敗: {err}")),
+                }
+            }
+            MenuAction::SaveAs => match save_as(
+                self.state.read().entries(),
+                self.loaded_strings(),
+                self.loaded_strings_kind(),
+                self.loaded_strings_path(),
+                self.loaded_plugin(),
+                self.loaded_plugin_path(),
+                self.loaded_esp_strings(),
+            ) {
+                Ok(path) => self.file_status.set(format!("別名保存: {}", path.display())),
+                Err(err) => self.file_status.set(format!("別名保存失敗: {err}")),
+            },
+            MenuAction::DictBuild => {
+                let root = PathBuf::from(self.dict_root());
+                match TranslationDictionary::build_from_strings_dir(
+                    &root,
+                    &self.dict_source_lang(),
+                    &self.dict_target_lang(),
+                ) {
+                    Ok((built, stats)) => {
+                        let pairs = built.len();
+                        self.dict.set(Some(built));
+                        self.dict_build_summary.set(Some(DictionaryBuildSummary {
+                            built_at_unix: now_unix_seconds(),
+                            pairs,
+                            files_seen: stats.files_seen,
+                            file_pairs: stats.file_pairs,
+                        }));
+                        self.dict_status.set(format!(
+                            "辞書構築: pairs={} files={} pair_files={}",
+                            pairs, stats.files_seen, stats.file_pairs
+                        ));
+                    }
+                    Err(err) => self.dict_status.set(format!("辞書構築失敗: {err}")),
+                }
+            }
+            MenuAction::QuickAuto => self.quick_auto(),
+            MenuAction::LangPanel => self.active_tab.set(Tab::Lang),
+            MenuAction::LangReset => {
+                self.dict_source_lang
+                    .set(DEFAULT_DICT_SOURCE_LANG.to_string());
+                self.dict_target_lang
+                    .set(DEFAULT_DICT_TARGET_LANG.to_string());
+                self.dict_root.set(DEFAULT_DICT_ROOT.to_string());
+                self.dict_status.set(format!(
+                    "言語ペアを {} -> {} に設定",
+                    DEFAULT_DICT_SOURCE_LANG, DEFAULT_DICT_TARGET_LANG
+                ));
+            }
+            MenuAction::Undo => {
+                if self.history.write().undo() {
+                    let entries = self.history.read().present().clone();
+                    self.state.write().set_entries(entries);
+                }
+            }
+            MenuAction::Redo => {
+                if self.history.write().redo() {
+                    let entries = self.history.read().present().clone();
+                    self.state.write().set_entries(entries);
+                }
+            }
+            MenuAction::LogTab => self.active_tab.set(Tab::Log),
+        }
+    }
+
+    fn quick_auto(&self) {
+        let selected = self.state.read().selected_key().map(|s| s.to_string());
+        let entries = self.state.read().entries().to_vec();
+        let result = {
+            let current = self.dict.read();
+            apply_quick_auto_selection(current.as_ref(), &entries, selected)
+        };
+        match result {
+            Ok((next, updated)) => {
+                if updated > 0 {
+                    self.history.write().apply(next.clone());
+                    self.state.write().set_entries(next);
+                }
+                self.dict_status
+                    .set(format!("Quick自動翻訳: updated={updated}"));
+            }
+            Err(err) => self.dict_status.set(err.to_string()),
+        }
+    }
+}
+
 fn main() {
     #[cfg(all(
         feature = "desktop",
         any(target_os = "windows", target_os = "linux", target_os = "macos")
     ))]
     {
-        use dioxus::desktop::Config;
-        dioxus::LaunchBuilder::new()
-            .with_cfg(Config::new().with_menu(build_native_menu()))
-            .launch(App);
+        dioxus::LaunchBuilder::new().launch(App);
     }
     #[cfg(not(all(
         feature = "desktop",
@@ -215,6 +360,27 @@ fn App() -> Element {
 
     let mut active_tab = use_signal(|| Tab::Home);
 
+    let menu_ctx = MenuContext {
+        history,
+        state,
+        dict,
+        dict_root,
+        dict_source_lang,
+        dict_target_lang,
+        dict_status,
+        dict_build_summary,
+        xml_text,
+        xml_error,
+        file_status,
+        loaded_strings,
+        loaded_strings_kind,
+        loaded_strings_path,
+        loaded_plugin,
+        loaded_plugin_path,
+        loaded_esp_strings,
+        active_tab,
+    };
+
     use_effect(move || {
         let prefs = DictionaryPrefs {
             source_lang: dict_source_lang(),
@@ -226,157 +392,6 @@ fn App() -> Element {
             Err(err) => dict_prefs_error.set(format!("辞書設定保存失敗: {err}")),
         }
     });
-
-    #[cfg(all(
-        feature = "desktop",
-        any(target_os = "windows", target_os = "linux", target_os = "macos")
-    ))]
-    {
-        use dioxus::desktop::use_muda_event_handler;
-        use_muda_event_handler(move |event| match event.id.as_ref() {
-            MENU_OPEN_PLUGIN => {
-                document::eval(
-                    "const el = document.getElementById('plugin-picker-native'); if (el) { el.click(); }",
-                );
-            }
-            MENU_OPEN_STRINGS => {
-                document::eval(
-                    "const el = document.getElementById('strings-picker-native'); if (el) { el.click(); }",
-                );
-            }
-            MENU_XML_EXPORT => {
-                xml_text.set(export_entries(state.read().entries()));
-                xml_error.set(None);
-                file_status.set("XMLを書き出しました（エディタ）".to_string());
-            }
-            MENU_XML_APPLY => {
-                document::eval(
-                    "const el = document.getElementById('xml-picker-native'); if (el) { el.click(); }",
-                );
-            }
-            MENU_SAVE_OVERWRITE => match save_overwrite(
-                state.read().entries(),
-                loaded_strings(),
-                loaded_strings_kind(),
-                loaded_strings_path(),
-                loaded_plugin(),
-                loaded_plugin_path(),
-                loaded_esp_strings(),
-            ) {
-                Ok(path) => file_status.set(format!("保存: {}", path.display())),
-                Err(err) => file_status.set(format!("保存失敗: {err}")),
-            },
-            MENU_SAVE_AS => match save_as(
-                state.read().entries(),
-                loaded_strings(),
-                loaded_strings_kind(),
-                loaded_strings_path(),
-                loaded_plugin(),
-                loaded_plugin_path(),
-                loaded_esp_strings(),
-            ) {
-                Ok(path) => file_status.set(format!("別名保存: {}", path.display())),
-                Err(err) => file_status.set(format!("別名保存失敗: {err}")),
-            },
-            MENU_DICT_BUILD => {
-                let root = PathBuf::from(dict_root());
-                match TranslationDictionary::build_from_strings_dir(
-                    &root,
-                    &dict_source_lang(),
-                    &dict_target_lang(),
-                ) {
-                    Ok((built, stats)) => {
-                        let pairs = built.len();
-                        dict.set(Some(built));
-                        dict_build_summary.set(Some(DictionaryBuildSummary {
-                            built_at_unix: now_unix_seconds(),
-                            pairs,
-                            files_seen: stats.files_seen,
-                            file_pairs: stats.file_pairs,
-                        }));
-                        dict_status.set(format!(
-                            "辞書構築: pairs={} files={} pair_files={}",
-                            pairs, stats.files_seen, stats.file_pairs
-                        ));
-                    }
-                    Err(err) => dict_status.set(format!("辞書構築失敗: {err}")),
-                }
-            }
-            MENU_QUICK_AUTO => {
-                let selected = state.read().selected_key().map(|s| s.to_string());
-                let entries = state.read().entries().to_vec();
-                let result = {
-                    let current = dict.read();
-                    apply_quick_auto_selection(current.as_ref(), &entries, selected)
-                };
-                match result {
-                    Ok((next, updated)) => {
-                        if updated > 0 {
-                            history.write().apply(next.clone());
-                            state.write().set_entries(next);
-                        }
-                        dict_status.set(format!("Quick自動翻訳: updated={updated}"));
-                    }
-                    Err(err) => dict_status.set(err.to_string()),
-                }
-            }
-            MENU_LANG_PANEL => active_tab.set(Tab::Lang),
-            MENU_LANG_RESET => {
-                dict_source_lang.set(DEFAULT_DICT_SOURCE_LANG.to_string());
-                dict_target_lang.set(DEFAULT_DICT_TARGET_LANG.to_string());
-                dict_root.set(DEFAULT_DICT_ROOT.to_string());
-                dict_status.set(format!(
-                    "言語ペアを {} -> {} に設定",
-                    DEFAULT_DICT_SOURCE_LANG, DEFAULT_DICT_TARGET_LANG
-                ));
-            }
-            MENU_UNDO => {
-                if history.write().undo() {
-                    let entries = history.read().present().clone();
-                    state.write().set_entries(entries);
-                }
-            }
-            MENU_REDO => {
-                if history.write().redo() {
-                    let entries = history.read().present().clone();
-                    state.write().set_entries(entries);
-                }
-            }
-            MENU_LOG_TAB => active_tab.set(Tab::Log),
-            _ => {}
-        });
-    }
-
-    #[cfg(all(
-        feature = "desktop",
-        any(target_os = "windows", target_os = "linux", target_os = "macos")
-    ))]
-    {
-        use dioxus::desktop::{use_global_shortcut, HotKeyState};
-        if let Err(err) = use_global_shortcut("Ctrl+R", move |hotkey_state| {
-            if hotkey_state != HotKeyState::Pressed {
-                return;
-            }
-            let selected = state.read().selected_key().map(|s| s.to_string());
-            let entries = state.read().entries().to_vec();
-            let result = {
-                let current = dict.read();
-                apply_quick_auto_selection(current.as_ref(), &entries, selected)
-            };
-            match result {
-                Ok((next, updated)) => {
-                    if updated > 0 {
-                        history.write().apply(next.clone());
-                        state.write().set_entries(next);
-                    }
-                    dict_status.set(format!("Quick自動翻訳(Ctrl+R): updated={updated}"));
-                }
-                Err(err) => dict_status.set(err.to_string()),
-            }
-        }) {
-            dict_status.set(format!("ショートカット登録失敗: {err:?}"));
-        }
-    }
 
     let selected_key = state.read().selected_key().map(|s| s.to_string());
     let selected_entry = state.read().selected_entry().cloned();
@@ -478,6 +493,86 @@ fn App() -> Element {
                     Err(err) => file_status.set(format!("XML read error (drop): {err}")),
                 }
             },
+            div { class: "menu-bar",
+                div { class: "menu-group",
+                    span { class: "menu-label", "ファイル" }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::OpenPlugin),
+                        "Esp/Esmを開く"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::OpenStrings),
+                        "Stringsを開く"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::XmlExport),
+                        "XML書き出し"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::XmlApply),
+                        "XML一括適用"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::SaveOverwrite),
+                        "上書き保存"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::SaveAs),
+                        "別名保存"
+                    }
+                }
+                div { class: "menu-group",
+                    span { class: "menu-label", "翻訳" }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::DictBuild),
+                        "辞書構築"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::QuickAuto),
+                        "Quick自動翻訳"
+                    }
+                }
+                div { class: "menu-group",
+                    span { class: "menu-label", "オプション" }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::LangPanel),
+                        "言語と辞書"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::LangReset),
+                        "言語ペアリセット"
+                    }
+                }
+                div { class: "menu-group",
+                    span { class: "menu-label", "ツール" }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::Undo),
+                        "Undo"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::Redo),
+                        "Redo"
+                    }
+                    button {
+                        class: "menu-item",
+                        onclick: move |_| menu_ctx.handle(MenuAction::LogTab),
+                        "ログタブ"
+                    }
+                }
+            }
+
             div { class: "toolbar",
                 button { class: "tool-ic", "F" }
                 button { class: "tool-ic", "T" }
@@ -1112,66 +1207,6 @@ fn unescape_pref_value(input: &str) -> Result<String, String> {
         }
     }
     String::from_utf8(out).map_err(|_| "辞書設定文字列が不正です".to_string())
-}
-
-#[cfg(all(
-    feature = "desktop",
-    any(target_os = "windows", target_os = "linux", target_os = "macos")
-))]
-fn build_native_menu() -> dioxus::desktop::muda::Menu {
-    use dioxus::desktop::muda::{
-        accelerator::{Accelerator, Code, Modifiers},
-        Menu, MenuItem, PredefinedMenuItem, Submenu,
-    };
-
-    let menu = Menu::new();
-
-    let file_menu = Submenu::new("ファイル(F)", true);
-    let open_plugin = MenuItem::with_id(MENU_OPEN_PLUGIN, "Esp/Esmファイルを開く", true, None);
-    let open_strings = MenuItem::with_id(MENU_OPEN_STRINGS, "Stringsファイルを開く", true, None);
-    let xml_export = MenuItem::with_id(MENU_XML_EXPORT, "翻訳XMLを書き出し", true, None);
-    let xml_apply = MenuItem::with_id(MENU_XML_APPLY, "翻訳XMLを一括適用", true, None);
-    let save = MenuItem::with_id(MENU_SAVE_OVERWRITE, "上書き保存", true, None);
-    let save_as = MenuItem::with_id(MENU_SAVE_AS, "別名保存", true, None);
-    let sep_file_1 = PredefinedMenuItem::separator();
-    let sep_file_2 = PredefinedMenuItem::separator();
-    let quit = PredefinedMenuItem::quit(None);
-    let _ = file_menu.append_items(&[
-        &open_plugin,
-        &open_strings,
-        &sep_file_1,
-        &xml_export,
-        &xml_apply,
-        &save,
-        &save_as,
-        &sep_file_2,
-        &quit,
-    ]);
-
-    let translate_menu = Submenu::new("翻訳(T)", true);
-    let dict_build = MenuItem::with_id(MENU_DICT_BUILD, "辞書を構築", true, None);
-    let quick_auto = MenuItem::with_id(
-        MENU_QUICK_AUTO,
-        "Quick自動翻訳",
-        true,
-        Some(Accelerator::new(Some(Modifiers::CONTROL), Code::KeyR)),
-    );
-    let _ = translate_menu.append_items(&[&dict_build, &quick_auto]);
-
-    let options_menu = Submenu::new("オプション(Z)", true);
-    let lang_panel = MenuItem::with_id(MENU_LANG_PANEL, "言語と辞書を開く", true, None);
-    let lang_reset = MenuItem::with_id(MENU_LANG_RESET, "言語ペアを既定に戻す", true, None);
-    let _ = options_menu.append_items(&[&lang_panel, &lang_reset]);
-
-    let tools_menu = Submenu::new("ツール(Y)", true);
-    let undo = MenuItem::with_id(MENU_UNDO, "Undo", true, None);
-    let redo = MenuItem::with_id(MENU_REDO, "Redo", true, None);
-    let sep_tools = PredefinedMenuItem::separator();
-    let log_tab = MenuItem::with_id(MENU_LOG_TAB, "ログタブを開く", true, None);
-    let _ = tools_menu.append_items(&[&undo, &redo, &sep_tools, &log_tab]);
-
-    let _ = menu.append_items(&[&file_menu, &translate_menu, &options_menu, &tools_menu]);
-    menu
 }
 
 fn save_overwrite(
