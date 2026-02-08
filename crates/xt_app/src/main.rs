@@ -585,96 +585,30 @@ fn App() -> Element {
                 }
             }
 
-            div { class: "tabs",
-                for (tab, label) in Tab::all() {
-                    button {
-                        class: if active_tab() == tab { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(tab),
-                        "{label}"
-                    }
-                }
-            }
+            {render_tab_bar(active_tab)}
 
             div { class: "panel",
-                if active_tab() == Tab::Home {
-                    if let Some(entry) = selected_entry {
-                        div { class: "editor",
-                            p { class: "k", "Key: {entry.key}" }
-                            label { "原文" }
-                            textarea {
-                                class: "txt",
-                                value: "{edit_source}",
-                                oninput: move |e| edit_source.set(e.value()),
-                            }
-                            label { "訳文" }
-                            textarea {
-                                class: "txt",
-                                value: "{edit_target}",
-                                oninput: move |e| edit_target.set(e.value()),
-                            }
-                            div { class: "actions",
-                                button {
-                                    class: "tool-btn",
-                                    disabled: selected_key.is_none(),
-                                    onclick: move |_| {
-                                        let Some(key) = state.read().selected_key().map(|s| s.to_string()) else { return; };
-                                        let next = {
-                                            let mut s = state.write();
-                                            if s.update_entry(&key, &edit_source(), &edit_target()) {
-                                                Some(s.entries().to_vec())
-                                            } else {
-                                                None
-                                            }
-                                        };
-                                        if let Some(entries) = next {
-                                            history.write().apply(entries);
-                                        }
-                                    },
-                                    "Apply Edit"
-                                }
-                                button {
-                                    class: "tool-btn",
-                                    onclick: move |_| {
-                                        let p = loaded_plugin().clone();
-                                        let s = loaded_strings().clone();
-                                        match (p, s) {
-                                            (Some(plugin), Some(strings)) => {
-                                                hybrid_preview.set(build_hybrid_entries(&plugin, &strings));
-                                                hybrid_error.set(None);
-                                            }
-                                            _ => hybrid_error.set(Some("Plugin/Stringsを先に読み込んでください".to_string())),
-                                        }
-                                    },
-                                    "Build Hybrid"
-                                }
-                            }
-                        }
-                    } else {
-                        p { "行を選択してください。" }
-                    }
-                } else if active_tab() == Tab::Log {
-                    div { class: "log",
-                        if !file_status().is_empty() { p { "{file_status}" } }
-                        if !dict_status().is_empty() { p { "{dict_status}" } }
-                        if !dict_prefs_error().is_empty() { p { class: "err", "{dict_prefs_error}" } }
-                        if let Some(summary) = dict_build_summary() {
-                            p {
-                                "辞書情報: built_at(unix)={summary.built_at_unix} pairs={summary.pairs} files={summary.files_seen} pair_files={summary.file_pairs}"
-                            }
-                        }
-                        if let Some(err) = xml_error() { p { class: "err", "{err}" } }
-                        if let Some(err) = hybrid_error() { p { class: "err", "{err}" } }
-                        if let Some(status) = diff_status() { p { "Diff status: {status:?}" } }
-                        if !encoding_status().is_empty() { p { "{encoding_status}" } }
-                        if !validation_issues().is_empty() {
-                            for issue in validation_issues() {
-                                p { "{issue.rule_id}: {issue.message}" }
-                            }
-                        }
-                    }
-                } else {
-                    p { "このタブは次フェーズで実装します。" }
-                }
+                {render_tab_panel(
+                    active_tab,
+                    selected_entry,
+                    selected_key,
+                    state,
+                    history,
+                    edit_source,
+                    edit_target,
+                    loaded_plugin,
+                    loaded_strings,
+                    hybrid_preview,
+                    hybrid_error,
+                    file_status,
+                    dict_status,
+                    dict_prefs_error,
+                    dict_build_summary,
+                    xml_error,
+                    diff_status,
+                    encoding_status,
+                    validation_issues,
+                )}
 
                 div { class: "io-row",
                     p { class: "inline", "XML適用: メニュー「ファイル > 翻訳XMLを一括適用」またはXMLファイルのドラッグ&ドロップを使用" }
@@ -891,6 +825,179 @@ fn App() -> Element {
             }
         }
     }
+}
+
+fn render_tab_bar(active_tab: Signal<Tab>) -> Element {
+    rsx! {
+        div { class: "tabs",
+            for (tab, label) in Tab::all() {
+                button {
+                    class: if active_tab() == tab { "tab active" } else { "tab" },
+                    onclick: move |_| active_tab.set(tab),
+                    "{label}"
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_tab_panel(
+    active_tab: Signal<Tab>,
+    selected_entry: Option<Entry>,
+    selected_key: Option<String>,
+    state: Signal<TwoPaneState>,
+    history: Signal<UndoStack>,
+    edit_source: Signal<String>,
+    edit_target: Signal<String>,
+    loaded_plugin: Signal<Option<PluginFile>>,
+    loaded_strings: Signal<Option<StringsFile>>,
+    hybrid_preview: Signal<Vec<HybridEntry>>,
+    hybrid_error: Signal<Option<String>>,
+    file_status: Signal<String>,
+    dict_status: Signal<String>,
+    dict_prefs_error: Signal<String>,
+    dict_build_summary: Signal<Option<DictionaryBuildSummary>>,
+    xml_error: Signal<Option<String>>,
+    diff_status: Signal<Option<EntryStatus>>,
+    encoding_status: Signal<String>,
+    validation_issues: Signal<Vec<ValidationIssue>>,
+) -> Element {
+    match active_tab() {
+        Tab::Home => render_home_tab(
+            selected_entry,
+            selected_key,
+            state,
+            history,
+            edit_source,
+            edit_target,
+            loaded_plugin,
+            loaded_strings,
+            hybrid_preview,
+            hybrid_error,
+        ),
+        Tab::Log => render_log_tab(
+            file_status,
+            dict_status,
+            dict_prefs_error,
+            dict_build_summary,
+            xml_error,
+            hybrid_error,
+            diff_status,
+            encoding_status,
+            validation_issues,
+        ),
+        _ => render_placeholder_tab(),
+    }
+}
+
+fn render_home_tab(
+    selected_entry: Option<Entry>,
+    selected_key: Option<String>,
+    state: Signal<TwoPaneState>,
+    history: Signal<UndoStack>,
+    edit_source: Signal<String>,
+    edit_target: Signal<String>,
+    loaded_plugin: Signal<Option<PluginFile>>,
+    loaded_strings: Signal<Option<StringsFile>>,
+    hybrid_preview: Signal<Vec<HybridEntry>>,
+    hybrid_error: Signal<Option<String>>,
+) -> Element {
+    rsx! {
+        if let Some(entry) = selected_entry {
+            div { class: "editor",
+                p { class: "k", "Key: {entry.key}" }
+                label { "原文" }
+                textarea {
+                    class: "txt",
+                    value: "{edit_source}",
+                    oninput: move |e| edit_source.set(e.value()),
+                }
+                label { "訳文" }
+                textarea {
+                    class: "txt",
+                    value: "{edit_target}",
+                    oninput: move |e| edit_target.set(e.value()),
+                }
+                div { class: "actions",
+                    button {
+                        class: "tool-btn",
+                        disabled: selected_key.is_none(),
+                        onclick: move |_| {
+                            let Some(key) = state.read().selected_key().map(|s| s.to_string()) else { return; };
+                            let next = {
+                                let mut s = state.write();
+                                if s.update_entry(&key, &edit_source(), &edit_target()) {
+                                    Some(s.entries().to_vec())
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(entries) = next {
+                                history.write().apply(entries);
+                            }
+                        },
+                        "Apply Edit"
+                    }
+                    button {
+                        class: "tool-btn",
+                        onclick: move |_| {
+                            let p = loaded_plugin().clone();
+                            let s = loaded_strings().clone();
+                            match (p, s) {
+                                (Some(plugin), Some(strings)) => {
+                                    hybrid_preview.set(build_hybrid_entries(&plugin, &strings));
+                                    hybrid_error.set(None);
+                                }
+                                _ => hybrid_error.set(Some("Plugin/Stringsを先に読み込んでください".to_string())),
+                            }
+                        },
+                        "Build Hybrid"
+                    }
+                }
+            }
+        } else {
+            p { "行を選択してください。" }
+        }
+    }
+}
+
+fn render_log_tab(
+    file_status: Signal<String>,
+    dict_status: Signal<String>,
+    dict_prefs_error: Signal<String>,
+    dict_build_summary: Signal<Option<DictionaryBuildSummary>>,
+    xml_error: Signal<Option<String>>,
+    hybrid_error: Signal<Option<String>>,
+    diff_status: Signal<Option<EntryStatus>>,
+    encoding_status: Signal<String>,
+    validation_issues: Signal<Vec<ValidationIssue>>,
+) -> Element {
+    rsx! {
+        div { class: "log",
+            if !file_status().is_empty() { p { "{file_status}" } }
+            if !dict_status().is_empty() { p { "{dict_status}" } }
+            if !dict_prefs_error().is_empty() { p { class: "err", "{dict_prefs_error}" } }
+            if let Some(summary) = dict_build_summary() {
+                p {
+                    "辞書情報: built_at(unix)={summary.built_at_unix} pairs={summary.pairs} files={summary.files_seen} pair_files={summary.file_pairs}"
+                }
+            }
+            if let Some(err) = xml_error() { p { class: "err", "{err}" } }
+            if let Some(err) = hybrid_error() { p { class: "err", "{err}" } }
+            if let Some(status) = diff_status() { p { "Diff status: {status:?}" } }
+            if !encoding_status().is_empty() { p { "{encoding_status}" } }
+            if !validation_issues().is_empty() {
+                for issue in validation_issues() {
+                    p { "{issue.rule_id}: {issue.message}" }
+                }
+            }
+        }
+    }
+}
+
+fn render_placeholder_tab() -> Element {
+    rsx! { p { "このタブは次フェーズで実装します。" } }
 }
 
 #[component]
