@@ -24,7 +24,7 @@ use xt_core::validation::{
     validate_alias_tags, validate_braced_placeholders, validate_printf_placeholders,
     ValidationIssue,
 };
-use xt_core::virtual_list::{virtual_window, VirtualWindow};
+use xt_core::virtual_list::{show_rows_window, VirtualWindow};
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
@@ -393,13 +393,16 @@ fn App() -> Element {
         let snapshot = filtered_snapshot.read();
         snapshot.entries.len()
     };
-    let window = virtual_window(
+    let window = show_rows_window(
         filtered_len,
         item_height,
         *viewport_height.read(),
         *scroll_offset.read(),
         overscan,
     );
+    let render_start = if window.end > 0 { window.start + 1 } else { 0 };
+    let render_end = window.end;
+    let render_rows = window.len();
     let rows = {
         let snapshot = filtered_snapshot.read();
         snapshot
@@ -548,6 +551,9 @@ fn App() -> Element {
                     span { class: "c-src", "原文" }
                     span { class: "c-dst", "訳文" }
                     span { class: "c-ld", "LD" }
+                }
+                div { class: "grid-meta",
+                    "描画中: {render_start}-{render_end} / {filtered_len} (rows {render_rows})"
                 }
                 div {
                     class: "grid-body",
