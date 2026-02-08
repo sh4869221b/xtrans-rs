@@ -1,5 +1,6 @@
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
+use eframe::egui;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -145,26 +146,28 @@ enum SpacerPosition {
     Bottom,
 }
 
-fn main() {
-    #[cfg(all(
-        feature = "desktop",
-        any(target_os = "windows", target_os = "linux", target_os = "macos")
-    ))]
-    {
-        use dioxus::desktop::Config;
-        dioxus::LaunchBuilder::new()
-            .with_cfg(Config::new().with_menu(build_native_menu()))
-            .launch(App);
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "xtrans-rs",
+        options,
+        Box::new(|_cc| Ok(Box::new(App::default()))),
+    )
+}
+
+#[derive(Default)]
+struct App;
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.label("xtrans-rs を eframe で起動しました。");
+        });
     }
-    #[cfg(not(all(
-        feature = "desktop",
-        any(target_os = "windows", target_os = "linux", target_os = "macos")
-    )))]
-    dioxus::launch(App);
 }
 
 #[component]
-fn App() -> Element {
+fn DioxusApp() -> Element {
     let mut history = use_signal(|| UndoStack::new(Vec::new()));
     let mut state = use_signal(|| TwoPaneState::new(history.read().present().clone()));
 
