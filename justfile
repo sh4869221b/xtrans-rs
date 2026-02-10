@@ -45,7 +45,7 @@ clippy:
 	cargo clippy --all-targets --all-features
 
 serve:
-	cargo run -p xt_app
+	cargo run -p xt_app --bin xt_app
 
 clean:
 	cargo clean
