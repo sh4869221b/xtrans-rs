@@ -1,4 +1,9 @@
-use eframe::egui::{self, Align, Layout, RichText, ScrollArea, TextEdit, TopBottomPanel};
+use std::path::Path;
+
+use eframe::egui::{
+    self, Align, FontData, FontDefinitions, FontFamily, Layout, RichText, ScrollArea, TextEdit,
+    TopBottomPanel,
+};
 
 use crate::actions::{dispatch, AppAction};
 use crate::state::{row_fields, AppState, Tab};
@@ -15,6 +20,7 @@ pub fn launch() -> eframe::Result<()> {
 #[derive(Default)]
 pub struct XtransApp {
     state: AppState,
+    fonts_configured: bool,
 }
 
 impl XtransApp {
@@ -318,6 +324,11 @@ impl XtransApp {
 
 impl eframe::App for XtransApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.fonts_configured {
+            configure_japanese_font(ctx);
+            self.fonts_configured = true;
+        }
+
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::R)) {
             self.run_action(AppAction::QuickAuto);
         }
@@ -364,4 +375,58 @@ impl eframe::App for XtransApp {
             });
         });
     }
+}
+
+fn configure_japanese_font(ctx: &egui::Context) {
+    let Some(bytes) = load_japanese_font_bytes() else {
+        return;
+    };
+
+    let mut fonts = FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("xtrans-jp".to_string(), FontData::from_owned(bytes).into());
+
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
+        family.insert(0, "xtrans-jp".to_string());
+    }
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+        family.insert(0, "xtrans-jp".to_string());
+    }
+
+    ctx.set_fonts(fonts);
+}
+
+fn load_japanese_font_bytes() -> Option<Vec<u8>> {
+    if let Ok(path) = std::env::var("XTRANS_FONT") {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some(bytes);
+        }
+    }
+
+    let candidates = [
+        "/usr/share/fonts/OTF/ipagp.ttf",
+        "/usr/share/fonts/OTF/ipag.ttf",
+        "/usr/share/fonts/OTF/ipamp.ttf",
+        "/usr/share/fonts/OTF/ipam.ttf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Medium.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Light.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf",
+        "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
+        "/usr/share/fonts/truetype/ipafont-gothic/ipag.ttf",
+        "/usr/share/fonts/opentype/vlgothic/VL-Gothic-Regular.ttf",
+    ];
+
+    for candidate in candidates {
+        if Path::new(candidate).exists() {
+            if let Ok(bytes) = std::fs::read(candidate) {
+                return Some(bytes);
+            }
+        }
+    }
+
+    None
 }
