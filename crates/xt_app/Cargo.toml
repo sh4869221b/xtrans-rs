@@ -5,12 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-dioxus = { version = "0.7.1", features = ["router", "fullstack"] }
+eframe = "0.28.1"
+egui = "0.28.1"
+rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "tokio"] }
 xt_core = { path = "../xt_core" }
-
-[features]
-default = ["desktop"]
-web = ["dioxus/web"]
-desktop = ["dioxus/desktop"]
-mobile = ["dioxus/mobile"]
-server = ["dioxus/server"]

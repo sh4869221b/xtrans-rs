@@ -45,10 +45,7 @@ clippy:
 	cargo clippy --all-targets --all-features
 
 serve:
-	cd crates/xt_app && dx serve --platform desktop
-
-bundle:
-	cd crates/xt_app && dx bundle
+	cargo run -p xt_app
 
 clean:
 	cargo clean

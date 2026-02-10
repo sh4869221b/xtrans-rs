@@ -34,6 +34,10 @@
 - [x] **T-APP-005**: Quick AutoTranslate は選択行なしで実行不可になる（FR-AUTO-03）
 - [x] **T-APP-006**: XML適用ヘルパーが更新件数を返す（FR-XML-07）
 - [x] **T-BATCH-001**: `--load --importxml --finalize` 引数の解析が成立する（FR-BATCH-01）
+- [x] **T-E2E-BOOT-001**: 起動直後の状態が空（0件/未選択）である（FR-UI-01）
+- [x] **T-E2E-IO-001**: Strings読込→編集→保存で round-trip できる（FR-SAVE-01）
+- [x] **T-E2E-XML-001**: XMLエディタ適用で対象行が更新される（FR-XML-02）
+- [x] **T-E2E-DICT-001**: 辞書構築→Quick Auto（選択行）で訳文適用される（FR-AUTO-03）
 
 ## Phase 3（v2: Archive/PEX/音声）
 - [ ] **T-BA2-EXT-001**: ba2 fixture抽出→ハッシュ一致（FR-ARC-01）

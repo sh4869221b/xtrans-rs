@@ -17,6 +17,7 @@
 ### 種別
 - Unit: validation/tm/diff/正規化
 - Integration: formats read/write round-trip、xml import/export
+- E2E: Action駆動シナリオで UI主要フロー（Load/Edit/Apply/Save/QuickAuto）を検証
 - Golden: 小さな実ファイルで入出力固定化
 - Perf-ish: 10万seedでの簡易測定（CIでは緩め）
 
