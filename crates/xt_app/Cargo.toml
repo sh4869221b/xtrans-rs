@@ -8,5 +8,5 @@ default-run = "xt_app"
 [dependencies]
 eframe = "0.28.1"
 egui = "0.28.1"
-rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "async-std"] }
 xt_core = { path = "../xt_core" }
