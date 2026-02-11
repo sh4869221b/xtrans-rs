@@ -1,5 +1,5 @@
-use std::path::Path;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -7,10 +7,13 @@ use eframe::egui::{
     self, Align, Align2, FontData, FontDefinitions, FontFamily, Layout, RichText, ScrollArea,
     TextEdit, TopBottomPanel,
 };
+use xt_core::dictionary::{DictionaryBuildStats, TranslationDictionary};
 use xt_core::import_export::{apply_xml_default, import_entries, XmlApplyStats};
 use xt_core::model::Entry;
 
-use crate::actions::{dispatch, AppAction};
+use crate::actions::{
+    apply_quick_auto_selection, dispatch, run_save_job, AppAction, SaveJobData, SaveMode,
+};
 use crate::state::{row_fields, AppState, Tab};
 
 const LARGE_XML_EDITOR_THRESHOLD_BYTES: usize = 256 * 1024;
@@ -28,20 +31,43 @@ pub fn launch() -> eframe::Result<()> {
 pub struct XtransApp {
     state: AppState,
     fonts_configured: bool,
-    pending_xml_apply: Option<PendingXmlApply>,
+    pending_job: Option<PendingJob>,
     show_large_xml_editor: bool,
 }
 
-struct PendingXmlApply {
+struct PendingJob {
     started_at: Instant,
-    source_label: Option<String>,
-    receiver: Receiver<Result<XmlApplyResult, String>>,
+    label: String,
+    receiver: Receiver<JobResult>,
+}
+
+enum JobResult {
+    Xml(Result<XmlApplyResult, String>),
+    BuildDictionary(Result<BuildDictionaryResult, String>),
+    QuickAuto(Result<QuickAutoResult, String>),
+    Save(Result<SaveResult, String>),
 }
 
 struct XmlApplyResult {
+    source_label: Option<String>,
     xml_text: String,
     merged: Vec<Entry>,
     stats: XmlApplyStats,
+}
+
+struct BuildDictionaryResult {
+    dict: TranslationDictionary,
+    stats: DictionaryBuildStats,
+}
+
+struct QuickAutoResult {
+    next: Vec<Entry>,
+    updated: usize,
+}
+
+struct SaveResult {
+    path: PathBuf,
+    mode: SaveMode,
 }
 
 impl XtransApp {
@@ -54,54 +80,116 @@ impl XtransApp {
     }
 
     fn is_blocked(&self) -> bool {
-        self.pending_xml_apply.is_some()
+        self.pending_job.is_some()
+    }
+
+    fn try_start_job<F>(&mut self, label: impl Into<String>, spawn: F) -> bool
+    where
+        F: FnOnce(Sender<JobResult>) + Send + 'static,
+    {
+        if self.pending_job.is_some() {
+            self.state.file_status = "重い処理を実行中です".to_string();
+            return false;
+        }
+        let label = label.into();
+        let (tx, rx) = mpsc::channel::<JobResult>();
+        thread::spawn(move || spawn(tx));
+        self.pending_job = Some(PendingJob {
+            started_at: Instant::now(),
+            label: label.clone(),
+            receiver: rx,
+        });
+        self.state.file_status = format!("{label}...");
+        true
     }
 
     fn start_xml_apply(&mut self, contents: String, source_label: Option<String>) {
-        if self.pending_xml_apply.is_some() {
-            self.state.file_status = "XML適用を実行中です".to_string();
-            return;
-        }
-
         let current_entries = self.state.entries().to_vec();
-        let (tx, rx) = mpsc::channel::<Result<XmlApplyResult, String>>();
-        thread::spawn(move || {
+        let source_label_for_job = source_label.clone();
+        if !self.try_start_job("XML適用", move |tx| {
             let result = import_entries(&contents)
                 .map_err(|err| format!("{err:?}"))
                 .map(|imported| {
                     let (merged, stats) = apply_xml_default(&current_entries, &imported);
                     XmlApplyResult {
+                        source_label: source_label_for_job,
                         xml_text: contents,
                         merged,
                         stats,
                     }
                 });
-            let _ = tx.send(result);
-        });
-
+            let _ = tx.send(JobResult::Xml(result));
+        }) {
+            return;
+        }
         self.state.xml_error = None;
-        self.state.file_status = "XML一括適用中...".to_string();
-        self.pending_xml_apply = Some(PendingXmlApply {
-            started_at: Instant::now(),
-            source_label,
-            receiver: rx,
+    }
+
+    fn start_build_dictionary_job(&mut self) {
+        let root = self.state.dict_root.clone();
+        let source_lang = self.state.dict_source_lang.clone();
+        let target_lang = self.state.dict_target_lang.clone();
+        if !self.try_start_job("辞書構築", move |tx| {
+            let result = TranslationDictionary::build_from_strings_dir(
+                &PathBuf::from(root),
+                &source_lang,
+                &target_lang,
+            )
+            .map_err(|err| format!("辞書構築失敗: {err}"))
+            .map(|(dict, stats)| BuildDictionaryResult { dict, stats });
+            let _ = tx.send(JobResult::BuildDictionary(result));
+        }) {
+            return;
+        }
+        self.state.dict_status = "辞書構築中...".to_string();
+    }
+
+    fn start_quick_auto_job(&mut self) {
+        let dict = self.state.dict.clone();
+        let entries = self.state.entries().to_vec();
+        let selected = self.state.selected_key();
+        if !self.try_start_job("Quick自動翻訳", move |tx| {
+            let result = apply_quick_auto_selection(dict.as_ref(), &entries, selected)
+                .map_err(|err| err.to_string())
+                .map(|(next, updated)| QuickAutoResult { next, updated });
+            let _ = tx.send(JobResult::QuickAuto(result));
+        }) {
+            return;
+        }
+        self.state.dict_status = "Quick自動翻訳中...".to_string();
+    }
+
+    fn start_save_job(&mut self, mode: SaveMode) {
+        let data = SaveJobData::from_state(&self.state);
+        let label = match &mode {
+            SaveMode::Overwrite => "保存",
+            SaveMode::Auto | SaveMode::Path(_) => "別名保存",
+        };
+        let mode_for_job = mode.clone();
+        let _ = self.try_start_job(label, move |tx| {
+            let result = run_save_job(data, mode_for_job.clone())
+                .map(|path| SaveResult {
+                    path,
+                    mode: mode_for_job,
+                })
+                .map_err(|err| format!("保存失敗: {err}"));
+            let _ = tx.send(JobResult::Save(result));
         });
     }
 
-    fn poll_xml_apply(&mut self) {
-        let Some(pending) = self.pending_xml_apply.as_mut() else {
+    fn poll_job(&mut self) {
+        let Some(pending) = self.pending_job.as_mut() else {
             return;
         };
 
         match pending.receiver.try_recv() {
-            Ok(result) => {
+            Ok(job_result) => {
                 let elapsed = pending.started_at.elapsed();
-                let source_label = pending.source_label.clone();
-                self.pending_xml_apply = None;
-
-                match result {
-                    Ok(done) => {
+                self.pending_job = None;
+                match job_result {
+                    JobResult::Xml(Ok(done)) => {
                         let xml_len = done.xml_text.len();
+                        let source_label = done.source_label;
                         let drop_large_xml_text =
                             source_label.is_some() && xml_len > LARGE_XML_EDITOR_THRESHOLD_BYTES;
                         if drop_large_xml_text {
@@ -110,19 +198,30 @@ impl XtransApp {
                             self.state.xml_text = done.xml_text;
                         }
                         if done.stats.updated > 0 {
-                            self.state.history.apply(done.merged.clone());
-                            self.state.set_entries_without_history(done.merged);
+                            self.state.apply_target_updates_with_history(done.merged);
                         }
-                        self.state.last_xml_stats = Some(done.stats.clone());
+                        self.state.last_xml_stats = Some(done.stats);
                         self.state.xml_error = None;
                         self.show_large_xml_editor =
                             !drop_large_xml_text && xml_len <= LARGE_XML_EDITOR_THRESHOLD_BYTES;
                         let src = source_label.unwrap_or_else(|| "エディタ".to_string());
                         let mut status = format!(
                             "XML適用({src}): updated={} unchanged={} missing={} [{:.2}s]",
-                            done.stats.updated,
-                            done.stats.unchanged,
-                            done.stats.missing,
+                            self.state
+                                .last_xml_stats
+                                .as_ref()
+                                .map(|s| s.updated)
+                                .unwrap_or(0),
+                            self.state
+                                .last_xml_stats
+                                .as_ref()
+                                .map(|s| s.unchanged)
+                                .unwrap_or(0),
+                            self.state
+                                .last_xml_stats
+                                .as_ref()
+                                .map(|s| s.missing)
+                                .unwrap_or(0),
                             elapsed.as_secs_f32()
                         );
                         if drop_large_xml_text {
@@ -130,24 +229,71 @@ impl XtransApp {
                         }
                         self.state.file_status = status;
                     }
-                    Err(err) => {
+                    JobResult::Xml(Err(err)) => {
                         self.state.xml_error = Some(err.clone());
                         self.state.file_status =
                             format!("XML適用失敗 [{:.2}s]", elapsed.as_secs_f32());
+                    }
+                    JobResult::BuildDictionary(Ok(done)) => {
+                        let pairs = done.dict.len();
+                        self.state.dict = Some(done.dict);
+                        self.state.mark_dictionary_built(
+                            pairs,
+                            done.stats.files_seen,
+                            done.stats.file_pairs,
+                        );
+                        self.state.dict_status = format!(
+                            "辞書構築: pairs={} files={} pair_files={}",
+                            pairs, done.stats.files_seen, done.stats.file_pairs
+                        );
+                        self.state.file_status =
+                            format!("辞書構築完了 [{:.2}s]", elapsed.as_secs_f32());
+                    }
+                    JobResult::BuildDictionary(Err(err)) => {
+                        self.state.dict_status = err.clone();
+                        self.state.file_status =
+                            format!("辞書構築失敗 [{:.2}s]", elapsed.as_secs_f32());
+                    }
+                    JobResult::QuickAuto(Ok(done)) => {
+                        if done.updated > 0 {
+                            self.state.apply_target_updates_with_history(done.next);
+                        }
+                        self.state.dict_status = format!("Quick自動翻訳: updated={}", done.updated);
+                        self.state.file_status =
+                            format!("Quick自動翻訳完了 [{:.2}s]", elapsed.as_secs_f32());
+                    }
+                    JobResult::QuickAuto(Err(err)) => {
+                        self.state.dict_status = err.clone();
+                        self.state.file_status =
+                            format!("Quick自動翻訳失敗 [{:.2}s]", elapsed.as_secs_f32());
+                    }
+                    JobResult::Save(Ok(done)) => {
+                        let prefix = match done.mode {
+                            SaveMode::Overwrite => "保存",
+                            SaveMode::Auto | SaveMode::Path(_) => "別名保存",
+                        };
+                        self.state.file_status = format!(
+                            "{}: {} [{:.2}s]",
+                            prefix,
+                            done.path.display(),
+                            elapsed.as_secs_f32()
+                        );
+                    }
+                    JobResult::Save(Err(err)) => {
+                        self.state.file_status = format!("{err} [{:.2}s]", elapsed.as_secs_f32());
                     }
                 }
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.pending_xml_apply = None;
-                self.state.xml_error = Some("XML適用ワーカーが異常終了しました".to_string());
-                self.state.file_status = "XML適用失敗".to_string();
+                self.pending_job = None;
+                self.state.file_status = "重い処理ワーカーが異常終了しました".to_string();
             }
         }
     }
 
     fn draw_busy_overlay(&self, ctx: &egui::Context) {
-        let Some(pending) = self.pending_xml_apply.as_ref() else {
+        let Some(pending) = self.pending_job.as_ref() else {
             return;
         };
         let rect = ctx.screen_rect();
@@ -163,7 +309,7 @@ impl XtransApp {
                 egui::Frame::window(ui.style()).show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add(egui::Spinner::new());
-                        ui.label("XMLを一括適用しています");
+                        ui.label(format!("{}を実行しています", pending.label));
                         ui.label(format!(
                             "経過: {:.1}s",
                             pending.started_at.elapsed().as_secs_f32()
@@ -217,14 +363,14 @@ impl XtransApp {
                 }
                 if ui.button("上書き保存").clicked() {
                     ui.close_menu();
-                    self.run_action(AppAction::SaveOverwrite);
+                    self.start_save_job(SaveMode::Overwrite);
                 }
                 if ui.button("別名保存").clicked() {
                     ui.close_menu();
                     if let Some(path) = rfd::FileDialog::new().save_file() {
-                        self.run_action(AppAction::SaveAsPath(path));
+                        self.start_save_job(SaveMode::Path(path));
                     } else {
-                        self.run_action(AppAction::SaveAsAuto);
+                        self.start_save_job(SaveMode::Auto);
                     }
                 }
             });
@@ -232,11 +378,11 @@ impl XtransApp {
             ui.menu_button("翻訳", |ui| {
                 if ui.button("辞書を構築").clicked() {
                     ui.close_menu();
-                    self.run_action(AppAction::BuildDictionary);
+                    self.start_build_dictionary_job();
                 }
                 if ui.button("Quick自動翻訳 (Ctrl-R)").clicked() {
                     ui.close_menu();
-                    self.run_action(AppAction::QuickAuto);
+                    self.start_quick_auto_job();
                 }
             });
 
@@ -364,39 +510,25 @@ impl XtransApp {
     }
 
     fn draw_home_tab(&mut self, ui: &mut egui::Ui) {
-        if let Some(entry) = self.state.selected_entry() {
-            ui.label(format!("Key: {}", entry.key));
-
-            let mut source = self.state.edit_source.clone();
-            if ui
-                .add(
-                    TextEdit::multiline(&mut source)
-                        .desired_rows(4)
-                        .hint_text("原文"),
-                )
-                .changed()
-            {
-                self.run_action(AppAction::SetEditSource(source));
-            }
-
-            let mut target = self.state.edit_target.clone();
-            if ui
-                .add(
-                    TextEdit::multiline(&mut target)
-                        .desired_rows(4)
-                        .hint_text("訳文"),
-                )
-                .changed()
-            {
-                self.run_action(AppAction::SetEditTarget(target));
-            }
+        if let Some(key) = self.state.selected_key() {
+            ui.label(format!("Key: {key}"));
+            ui.add(
+                TextEdit::multiline(&mut self.state.edit_source)
+                    .desired_rows(4)
+                    .hint_text("原文"),
+            );
+            ui.add(
+                TextEdit::multiline(&mut self.state.edit_target)
+                    .desired_rows(4)
+                    .hint_text("訳文"),
+            );
 
             ui.horizontal(|ui| {
                 if ui.button("Apply Edit").clicked() {
                     self.run_action(AppAction::ApplyEdit);
                 }
                 if ui.button("Quick Auto").clicked() {
-                    self.run_action(AppAction::QuickAuto);
+                    self.start_quick_auto_job();
                 }
                 if ui.button("Undo").clicked() {
                     self.run_action(AppAction::Undo);
@@ -447,24 +579,27 @@ impl XtransApp {
         ui.separator();
         ui.label("Dictionary");
 
-        let mut src = self.state.dict_source_lang.clone();
-        if ui.text_edit_singleline(&mut src).changed() {
-            self.run_action(AppAction::SetDictSourceLang(src));
+        if ui
+            .text_edit_singleline(&mut self.state.dict_source_lang)
+            .changed()
+        {
+            self.state.persist_dictionary_prefs();
         }
 
-        let mut dst = self.state.dict_target_lang.clone();
-        if ui.text_edit_singleline(&mut dst).changed() {
-            self.run_action(AppAction::SetDictTargetLang(dst));
+        if ui
+            .text_edit_singleline(&mut self.state.dict_target_lang)
+            .changed()
+        {
+            self.state.persist_dictionary_prefs();
         }
 
-        let mut root = self.state.dict_root.clone();
-        if ui.text_edit_singleline(&mut root).changed() {
-            self.run_action(AppAction::SetDictRoot(root));
+        if ui.text_edit_singleline(&mut self.state.dict_root).changed() {
+            self.state.persist_dictionary_prefs();
         }
 
         ui.horizontal(|ui| {
             if ui.button("辞書を構築").clicked() {
-                self.run_action(AppAction::BuildDictionary);
+                self.start_build_dictionary_job();
             }
             if ui.button("言語ペア初期化").clicked() {
                 self.run_action(AppAction::ResetDictLanguagePair);
@@ -520,14 +655,14 @@ impl eframe::App for XtransApp {
             configure_japanese_font(ctx);
             self.fonts_configured = true;
         }
-        self.poll_xml_apply();
+        self.poll_job();
         let blocked = self.is_blocked();
         if blocked {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
 
         if !blocked && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::R)) {
-            self.run_action(AppAction::QuickAuto);
+            self.start_quick_auto_job();
         }
 
         TopBottomPanel::top("menu_toolbar").show(ctx, |ui| {

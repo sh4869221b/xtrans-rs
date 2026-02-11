@@ -52,6 +52,72 @@ pub enum AppAction {
     SaveAsPath(PathBuf),
 }
 
+#[derive(Clone)]
+pub enum SaveMode {
+    Overwrite,
+    Auto,
+    Path(PathBuf),
+}
+
+#[derive(Clone)]
+pub struct SaveJobData {
+    pub entries: Vec<Entry>,
+    pub loaded_strings: Option<StringsFile>,
+    pub loaded_strings_kind: Option<StringsKind>,
+    pub loaded_strings_path: Option<PathBuf>,
+    pub loaded_plugin: Option<PluginFile>,
+    pub loaded_plugin_path: Option<PathBuf>,
+    pub loaded_esp_strings: Option<Vec<ExtractedString>>,
+}
+
+impl SaveJobData {
+    pub fn from_state(state: &AppState) -> Self {
+        Self {
+            entries: state.entries().to_vec(),
+            loaded_strings: state.loaded_strings.clone(),
+            loaded_strings_kind: state.loaded_strings_kind,
+            loaded_strings_path: state.loaded_strings_path.clone(),
+            loaded_plugin: state.loaded_plugin.clone(),
+            loaded_plugin_path: state.loaded_plugin_path.clone(),
+            loaded_esp_strings: state.loaded_esp_strings.clone(),
+        }
+    }
+}
+
+pub fn run_save_job(data: SaveJobData, mode: SaveMode) -> Result<PathBuf, String> {
+    match mode {
+        SaveMode::Overwrite => save_overwrite(
+            &data.entries,
+            data.loaded_strings.as_ref(),
+            data.loaded_strings_kind,
+            data.loaded_strings_path.as_deref(),
+            data.loaded_plugin.as_ref(),
+            data.loaded_plugin_path.as_deref(),
+            data.loaded_esp_strings.as_deref(),
+        ),
+        SaveMode::Auto => save_as(
+            &data.entries,
+            data.loaded_strings.as_ref(),
+            data.loaded_strings_kind,
+            data.loaded_strings_path.as_deref(),
+            data.loaded_plugin.as_ref(),
+            data.loaded_plugin_path.as_deref(),
+            data.loaded_esp_strings.as_deref(),
+            None,
+        ),
+        SaveMode::Path(path) => save_as(
+            &data.entries,
+            data.loaded_strings.as_ref(),
+            data.loaded_strings_kind,
+            data.loaded_strings_path.as_deref(),
+            data.loaded_plugin.as_ref(),
+            data.loaded_plugin_path.as_deref(),
+            data.loaded_esp_strings.as_deref(),
+            Some(path),
+        ),
+    }
+}
+
 pub fn dispatch(state: &mut AppState, action: AppAction) -> Result<(), String> {
     match action {
         AppAction::SetQuery(query) => {
@@ -96,8 +162,6 @@ pub fn dispatch(state: &mut AppState, action: AppAction) -> Result<(), String> {
             let source = state.edit_source.clone();
             let target = state.edit_target.clone();
             if state.update_entry(&key, &source, &target) {
-                let entries = state.entries().to_vec();
-                state.history.apply(entries);
                 state.file_status = "編集を反映しました".to_string();
             }
         }
@@ -146,8 +210,7 @@ pub fn dispatch(state: &mut AppState, action: AppAction) -> Result<(), String> {
             match result {
                 Ok((next, updated)) => {
                     if updated > 0 {
-                        state.history.apply(next.clone());
-                        state.set_entries_without_history(next);
+                        state.apply_target_updates_with_history(next);
                     }
                     state.dict_status = format!("Quick自動翻訳: updated={updated}");
                 }
@@ -227,24 +290,24 @@ pub fn dispatch(state: &mut AppState, action: AppAction) -> Result<(), String> {
         AppAction::SaveOverwrite => {
             let path = save_overwrite(
                 state.entries(),
-                state.loaded_strings.clone(),
+                state.loaded_strings.as_ref(),
                 state.loaded_strings_kind,
-                state.loaded_strings_path.clone(),
-                state.loaded_plugin.clone(),
-                state.loaded_plugin_path.clone(),
-                state.loaded_esp_strings.clone(),
+                state.loaded_strings_path.as_deref(),
+                state.loaded_plugin.as_ref(),
+                state.loaded_plugin_path.as_deref(),
+                state.loaded_esp_strings.as_deref(),
             )?;
             state.file_status = format!("保存: {}", path.display());
         }
         AppAction::SaveAsAuto => {
             let path = save_as(
                 state.entries(),
-                state.loaded_strings.clone(),
+                state.loaded_strings.as_ref(),
                 state.loaded_strings_kind,
-                state.loaded_strings_path.clone(),
-                state.loaded_plugin.clone(),
-                state.loaded_plugin_path.clone(),
-                state.loaded_esp_strings.clone(),
+                state.loaded_strings_path.as_deref(),
+                state.loaded_plugin.as_ref(),
+                state.loaded_plugin_path.as_deref(),
+                state.loaded_esp_strings.as_deref(),
                 None,
             )?;
             state.file_status = format!("別名保存: {}", path.display());
@@ -252,12 +315,12 @@ pub fn dispatch(state: &mut AppState, action: AppAction) -> Result<(), String> {
         AppAction::SaveAsPath(path) => {
             let path = save_as(
                 state.entries(),
-                state.loaded_strings.clone(),
+                state.loaded_strings.as_ref(),
                 state.loaded_strings_kind,
-                state.loaded_strings_path.clone(),
-                state.loaded_plugin.clone(),
-                state.loaded_plugin_path.clone(),
-                state.loaded_esp_strings.clone(),
+                state.loaded_strings_path.as_deref(),
+                state.loaded_plugin.as_ref(),
+                state.loaded_plugin_path.as_deref(),
+                state.loaded_esp_strings.as_deref(),
                 Some(path),
             )?;
             state.file_status = format!("別名保存: {}", path.display());
@@ -382,8 +445,7 @@ fn apply_xml_to_current(state: &mut AppState, contents: String) -> Result<(), St
     let current_entries = state.entries().to_vec();
     let (merged, stats) = apply_xml_payload(&current_entries, &contents)?;
     if stats.updated > 0 {
-        state.history.apply(merged.clone());
-        state.set_entries_without_history(merged);
+        state.apply_target_updates_with_history(merged);
     }
     state.file_status = format!(
         "XML適用: updated={} unchanged={} missing={}",
@@ -394,7 +456,7 @@ fn apply_xml_to_current(state: &mut AppState, contents: String) -> Result<(), St
     Ok(())
 }
 
-fn apply_quick_auto_selection(
+pub(crate) fn apply_quick_auto_selection(
     dict: Option<&TranslationDictionary>,
     entries: &[Entry],
     selected_key: Option<String>,
@@ -419,23 +481,23 @@ fn apply_xml_payload(
 
 fn save_overwrite(
     entries: &[Entry],
-    loaded_strings: Option<StringsFile>,
+    loaded_strings: Option<&StringsFile>,
     loaded_strings_kind: Option<StringsKind>,
-    loaded_strings_path: Option<PathBuf>,
-    loaded_plugin: Option<PluginFile>,
-    loaded_plugin_path: Option<PathBuf>,
-    loaded_esp_strings: Option<Vec<ExtractedString>>,
+    loaded_strings_path: Option<&Path>,
+    loaded_plugin: Option<&PluginFile>,
+    loaded_plugin_path: Option<&Path>,
+    loaded_esp_strings: Option<&[ExtractedString]>,
 ) -> Result<PathBuf, String> {
     if let Some(plugin_path) = loaded_plugin_path {
         if let Some(extracted) = loaded_esp_strings {
-            return save_esp(entries, &plugin_path, &plugin_path, extracted);
+            return save_esp(entries, plugin_path, plugin_path, extracted);
         }
         if let Some(plugin) = loaded_plugin {
             ensure_backup(&plugin_path)?;
             let encoded = write_plugin(&plugin).map_err(|e| format!("{e:?}"))?;
             std::fs::write(&plugin_path, encoded)
                 .map_err(|e| format!("plugin save {}: {e}", plugin_path.display()))?;
-            return Ok(plugin_path);
+            return Ok(plugin_path.to_path_buf());
         }
     }
 
@@ -450,12 +512,12 @@ fn save_overwrite(
 
 fn save_as(
     entries: &[Entry],
-    loaded_strings: Option<StringsFile>,
+    loaded_strings: Option<&StringsFile>,
     loaded_strings_kind: Option<StringsKind>,
-    loaded_strings_path: Option<PathBuf>,
-    loaded_plugin: Option<PluginFile>,
-    loaded_plugin_path: Option<PathBuf>,
-    loaded_esp_strings: Option<Vec<ExtractedString>>,
+    loaded_strings_path: Option<&Path>,
+    loaded_plugin: Option<&PluginFile>,
+    loaded_plugin_path: Option<&Path>,
+    loaded_esp_strings: Option<&[ExtractedString]>,
     output_override: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
     if let Some(plugin_path) = loaded_plugin_path {
@@ -508,7 +570,7 @@ fn save_esp(
     entries: &[Entry],
     input_path: &Path,
     output_path: &Path,
-    extracted: Vec<ExtractedString>,
+    extracted: &[ExtractedString],
 ) -> Result<PathBuf, String> {
     if input_path == output_path && input_path.exists() {
         ensure_backup(input_path)?;
@@ -521,7 +583,7 @@ fn save_esp(
         }
     }
 
-    let mut translated = extracted;
+    let mut translated = extracted.to_vec();
     for item in &mut translated {
         let key = item.get_unique_key();
         if let Some(target) = targets.get(key.as_str()) {

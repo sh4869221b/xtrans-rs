@@ -10,9 +10,9 @@ use xt_core::hybrid::HybridEntry;
 use xt_core::import_export::XmlApplyStats;
 use xt_core::model::Entry;
 use xt_core::ui_state::TwoPaneState;
-use xt_core::undo::UndoStack;
 use xt_core::validation::ValidationIssue;
 
+use crate::history::{BatchTargetChange, EntryHistory, SingleEditOp, DEFAULT_HISTORY_LIMIT};
 use crate::prefs::{
     load_dictionary_prefs, save_dictionary_prefs, DictionaryPrefs, DEFAULT_DICT_ROOT,
     DEFAULT_DICT_SOURCE_LANG, DEFAULT_DICT_TARGET_LANG,
@@ -84,7 +84,7 @@ pub struct ChannelCounts {
 }
 
 pub struct AppState {
-    pub history: UndoStack<Vec<Entry>>,
+    pub history: EntryHistory,
     pub pane: TwoPaneState,
 
     pub edit_source: String,
@@ -133,8 +133,8 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let history = UndoStack::new(Vec::new());
-        let pane = TwoPaneState::new(history.present().clone());
+        let history = EntryHistory::with_limit(DEFAULT_HISTORY_LIMIT);
+        let pane = TwoPaneState::new(Vec::new());
         let initial_prefs = load_dictionary_prefs().unwrap_or_default();
 
         Self {
@@ -175,8 +175,8 @@ impl AppState {
         self.pane.selected_key().map(ToString::to_string)
     }
 
-    pub fn selected_entry(&self) -> Option<Entry> {
-        self.pane.selected_entry().cloned()
+    pub fn selected_entry(&self) -> Option<&Entry> {
+        self.pane.selected_entry()
     }
 
     pub fn filtered_len(&mut self) -> usize {
@@ -208,7 +208,7 @@ impl AppState {
     }
 
     pub fn set_entries_with_history(&mut self, entries: Vec<Entry>) {
-        self.history.apply(entries.clone());
+        self.history.clear();
         self.pane.set_entries(entries);
         self.invalidate_filtered_cache();
     }
@@ -219,23 +219,80 @@ impl AppState {
     }
 
     pub fn update_entry(&mut self, key: &str, source: &str, target: &str) -> bool {
-        let updated = self.pane.update_entry(key, source, target);
-        if updated {
-            self.invalidate_filtered_cache();
+        let Some(index) = self
+            .pane
+            .entries()
+            .iter()
+            .position(|entry| entry.key == key)
+        else {
+            return false;
+        };
+        let entry = &self.pane.entries()[index];
+        if entry.source_text == source && entry.target_text == target {
+            return false;
         }
+
+        let op = SingleEditOp {
+            index,
+            before_source: entry.source_text.clone(),
+            before_target: entry.target_text.clone(),
+            after_source: source.to_string(),
+            after_target: target.to_string(),
+        };
+
+        if let Some(entry) = self.pane.entries_mut().get_mut(index) {
+            entry.source_text.clear();
+            entry.source_text.push_str(source);
+            entry.target_text.clear();
+            entry.target_text.push_str(target);
+            self.history.record_single_edit(op);
+            self.invalidate_filtered_cache();
+            return true;
+        }
+        false
+    }
+
+    pub fn apply_target_updates_with_history(&mut self, next: Vec<Entry>) -> usize {
+        let current = self.pane.entries();
+        if current.len() != next.len()
+            || current
+                .iter()
+                .zip(next.iter())
+                .any(|(a, b)| a.key != b.key || a.source_text != b.source_text)
+        {
+            self.history.clear();
+            self.set_entries_without_history(next);
+            return 0;
+        }
+
+        let mut changes = Vec::new();
+        for (index, (before, after)) in current.iter().zip(next.iter()).enumerate() {
+            if before.target_text != after.target_text {
+                changes.push(BatchTargetChange {
+                    index,
+                    before_target: before.target_text.clone(),
+                    after_target: after.target_text.clone(),
+                });
+            }
+        }
+
+        if changes.is_empty() {
+            return 0;
+        }
+        let updated = changes.len();
+        self.history.record_batch_target_edit(changes);
+        self.set_entries_without_history(next);
         updated
     }
 
     pub fn undo(&mut self) {
-        if self.history.undo() {
-            self.pane.set_entries(self.history.present().clone());
+        if self.history.undo(self.pane.entries_mut()) {
             self.invalidate_filtered_cache();
         }
     }
 
     pub fn redo(&mut self) {
-        if self.history.redo() {
-            self.pane.set_entries(self.history.present().clone());
+        if self.history.redo(self.pane.entries_mut()) {
             self.invalidate_filtered_cache();
         }
     }

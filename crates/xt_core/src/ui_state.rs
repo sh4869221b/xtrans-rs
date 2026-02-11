@@ -20,6 +20,10 @@ impl TwoPaneState {
         &self.entries
     }
 
+    pub fn entries_mut(&mut self) -> &mut [Entry] {
+        &mut self.entries
+    }
+
     pub fn query(&self) -> &str {
         &self.query
     }
@@ -56,8 +60,7 @@ impl TwoPaneState {
         self.entries
             .iter()
             .filter(|entry| {
-                entry.source_text.contains(&self.query)
-                    || entry.target_text.contains(&self.query)
+                entry.source_text.contains(&self.query) || entry.target_text.contains(&self.query)
             })
             .cloned()
             .collect()
