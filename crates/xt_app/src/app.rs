@@ -420,10 +420,6 @@ impl XtransApp {
             });
 
             ui.menu_button("オプション", |ui| {
-                if ui.button("言語タブを開く").clicked() {
-                    ui.close_menu();
-                    self.run_action(AppAction::SetActiveTab(Tab::Lang));
-                }
                 if ui.button("言語ペアを既定に戻す").clicked() {
                     ui.close_menu();
                     self.run_action(AppAction::ResetDictLanguagePair);
@@ -467,9 +463,6 @@ impl XtransApp {
             if ui.button("Encoding").clicked() {
                 self.run_action(AppAction::EncodingCheck);
             }
-            if ui.button("Build Hybrid").clicked() {
-                self.run_action(AppAction::BuildHybrid);
-            }
         });
 
         let counts = self.state.channel_counts();
@@ -484,8 +477,6 @@ impl XtransApp {
                 counts.translated, counts.strings
             ));
             ui.add(egui::ProgressBar::new(ratio).desired_width(140.0));
-            ui.label(format!("DLSTRINGS [0/{}]", counts.dlstrings));
-            ui.label(format!("ILSTRINGS [0/{}]", counts.ilstrings));
         });
     }
 
@@ -778,7 +769,8 @@ impl XtransApp {
                     } else if self.state.active_tab == Tab::Log {
                         self.draw_log_tab(ui);
                     } else {
-                        ui.label("このタブは次フェーズで実装します。");
+                        self.state.active_tab = Tab::Home;
+                        self.draw_home_tab(ui);
                     }
                     self.draw_aux_panel(ui);
                 });

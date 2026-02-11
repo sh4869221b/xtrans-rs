@@ -31,17 +31,8 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub fn all() -> [(Tab, &'static str); 8] {
-        [
-            (Tab::Home, "ホーム"),
-            (Tab::Heuristic, "ヒューリスティック候補"),
-            (Tab::Lang, "言語"),
-            (Tab::Esp, "Espツリー"),
-            (Tab::Pex, "Pex解析"),
-            (Tab::Quest, "クエスト一覧"),
-            (Tab::Npc, "NPC/音声リンク"),
-            (Tab::Log, "ログ"),
-        ]
+    pub fn all() -> [(Tab, &'static str); 2] {
+        [(Tab::Home, "ホーム"), (Tab::Log, "ログ")]
     }
 }
 
