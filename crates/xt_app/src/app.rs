@@ -4,8 +4,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, Align2, FontData, FontDefinitions, FontFamily, Layout, RichText, ScrollArea,
-    TextEdit, TopBottomPanel,
+    self, Align, Align2, Color32, FontData, FontDefinitions, FontFamily, Layout, RichText,
+    ScrollArea, TextEdit, TopBottomPanel,
 };
 use xt_core::dictionary::{DictionaryBuildStats, TranslationDictionary};
 use xt_core::import_export::{apply_xml_default, import_entries, XmlApplyStats};
@@ -17,6 +17,11 @@ use crate::actions::{
 use crate::state::{row_fields, AppState, Tab};
 
 const LARGE_XML_EDITOR_THRESHOLD_BYTES: usize = 256 * 1024;
+const ENTRY_COL_EDID_WIDTH: f32 = 120.0;
+const ENTRY_COL_RECORD_WIDTH: f32 = 84.0;
+const ENTRY_COL_TEXT_WIDTH: f32 = 240.0;
+const ENTRY_COL_LD_WIDTH: f32 = 26.0;
+const XT_ACCENT: Color32 = Color32::from_rgb(42, 157, 194);
 
 pub fn launch() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -31,6 +36,7 @@ pub fn launch() -> eframe::Result<()> {
 pub struct XtransApp {
     state: AppState,
     fonts_configured: bool,
+    style_configured: bool,
     pending_job: Option<PendingJob>,
     show_large_xml_editor: bool,
 }
@@ -320,6 +326,32 @@ impl XtransApp {
             });
     }
 
+    fn draw_entry_header(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [ENTRY_COL_EDID_WIDTH, 18.0],
+                egui::Label::new(RichText::new("EDID").color(XT_ACCENT).small().monospace()),
+            );
+            ui.add_sized(
+                [ENTRY_COL_RECORD_WIDTH, 18.0],
+                egui::Label::new(RichText::new("Record").color(XT_ACCENT).small()),
+            );
+            ui.add_sized(
+                [ENTRY_COL_TEXT_WIDTH, 18.0],
+                egui::Label::new(RichText::new("Source").color(XT_ACCENT).small()),
+            );
+            ui.add_sized(
+                [ENTRY_COL_TEXT_WIDTH, 18.0],
+                egui::Label::new(RichText::new("Target").color(XT_ACCENT).small()),
+            );
+            ui.add_sized(
+                [ENTRY_COL_LD_WIDTH, 18.0],
+                egui::Label::new(RichText::new("LD").color(XT_ACCENT).small().monospace()),
+            );
+        });
+        ui.separator();
+    }
+
     fn draw_menu(&mut self, ui: &mut egui::Ui) {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("ファイル", |ui| {
@@ -460,8 +492,9 @@ impl XtransApp {
         let filtered_len = self.state.filtered_len();
         let selected_key = self.state.selected_key();
         let mut next_selection = None;
-        ui.heading("Entries");
+        ui.label(RichText::new("Entries").color(XT_ACCENT).strong());
         ui.separator();
+        self.draw_entry_header(ui);
 
         ScrollArea::vertical().show_rows(ui, 22.0, filtered_len, |ui, row_range| {
             for row in row_range {
@@ -473,23 +506,45 @@ impl XtransApp {
                 ui.horizontal(|ui| {
                     let source_preview = text_preview(&entry.source_text, 72);
                     let target_preview = text_preview(&entry.target_text, 72);
-                    let clicked = ui.selectable_label(selected, edid).clicked()
+                    let clicked = ui
+                        .add_sized(
+                            [ENTRY_COL_EDID_WIDTH, 18.0],
+                            egui::SelectableLabel::new(
+                                selected,
+                                RichText::new(edid).monospace().size(12.0),
+                            ),
+                        )
+                        .clicked()
                         || ui
-                            .add(egui::Label::new(record_id).sense(egui::Sense::click()))
+                            .add_sized(
+                                [ENTRY_COL_RECORD_WIDTH, 18.0],
+                                egui::Label::new(record_id).sense(egui::Sense::click()),
+                            )
                             .clicked()
                         || ui
-                            .add(egui::Label::new(source_preview).sense(egui::Sense::click()))
+                            .add_sized(
+                                [ENTRY_COL_TEXT_WIDTH, 18.0],
+                                egui::Label::new(source_preview).sense(egui::Sense::click()),
+                            )
                             .clicked()
                         || ui
-                            .add(egui::Label::new(target_preview).sense(egui::Sense::click()))
+                            .add_sized(
+                                [ENTRY_COL_TEXT_WIDTH, 18.0],
+                                egui::Label::new(target_preview).sense(egui::Sense::click()),
+                            )
                             .clicked()
                         || ui
-                            .add(egui::Label::new(ld).sense(egui::Sense::click()))
+                            .add_sized(
+                                [ENTRY_COL_LD_WIDTH, 18.0],
+                                egui::Label::new(RichText::new(ld).monospace())
+                                    .sense(egui::Sense::click()),
+                            )
                             .clicked();
                     if clicked {
                         next_selection = Some(entry.key.clone());
                     }
                 });
+                ui.separator();
             }
         });
 
@@ -502,7 +557,15 @@ impl XtransApp {
         ui.horizontal_wrapped(|ui| {
             for (tab, label) in Tab::all() {
                 let selected = self.state.active_tab == tab;
-                if ui.selectable_label(selected, label).clicked() {
+                let text = if selected {
+                    RichText::new(label).color(XT_ACCENT).strong()
+                } else {
+                    RichText::new(label)
+                };
+                if ui
+                    .add_sized([110.0, 22.0], egui::SelectableLabel::new(selected, text))
+                    .clicked()
+                {
                     self.run_action(AppAction::SetActiveTab(tab));
                 }
             }
@@ -511,7 +574,7 @@ impl XtransApp {
 
     fn draw_home_tab(&mut self, ui: &mut egui::Ui) {
         if let Some(key) = self.state.selected_key() {
-            ui.label(format!("Key: {key}"));
+            ui.label(RichText::new(format!("Key: {key}")).color(XT_ACCENT));
             ui.add(
                 TextEdit::multiline(&mut self.state.edit_source)
                     .desired_rows(4)
@@ -577,7 +640,7 @@ impl XtransApp {
 
     fn draw_aux_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.label("Dictionary");
+        ui.label(RichText::new("Dictionary").color(XT_ACCENT).strong());
 
         if ui
             .text_edit_singleline(&mut self.state.dict_source_lang)
@@ -607,7 +670,7 @@ impl XtransApp {
         });
 
         ui.separator();
-        ui.label("XML");
+        ui.label(RichText::new("XML").color(XT_ACCENT).strong());
         let xml_len = self.state.xml_text.len();
         let suppress_large_editor =
             xml_len > LARGE_XML_EDITOR_THRESHOLD_BYTES && !self.show_large_xml_editor;
@@ -629,6 +692,7 @@ impl XtransApp {
         } else {
             ui.add(
                 TextEdit::multiline(&mut self.state.xml_text)
+                    .code_editor()
                     .desired_rows(8)
                     .desired_width(f32::INFINITY),
             );
@@ -654,6 +718,10 @@ impl eframe::App for XtransApp {
         if !self.fonts_configured {
             configure_japanese_font(ctx);
             self.fonts_configured = true;
+        }
+        if !self.style_configured {
+            configure_xtranslator_style(ctx);
+            self.style_configured = true;
         }
         self.poll_job();
         let blocked = self.is_blocked();
@@ -693,24 +761,27 @@ impl eframe::App for XtransApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_enabled_ui(!blocked, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(ui.available_width() * 0.42);
-                        self.draw_entry_list(ui);
-                    });
+                ui.vertical(|ui| {
+                    let list_height = (ui.available_height() * 0.46).max(200.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), list_height),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            self.draw_entry_list(ui);
+                        },
+                    );
+
                     ui.separator();
-                    ui.vertical(|ui| {
-                        self.draw_tabs(ui);
-                        ui.separator();
-                        if self.state.active_tab == Tab::Home {
-                            self.draw_home_tab(ui);
-                        } else if self.state.active_tab == Tab::Log {
-                            self.draw_log_tab(ui);
-                        } else {
-                            ui.label("このタブは次フェーズで実装します。");
-                        }
-                        self.draw_aux_panel(ui);
-                    });
+                    self.draw_tabs(ui);
+                    ui.separator();
+                    if self.state.active_tab == Tab::Home {
+                        self.draw_home_tab(ui);
+                    } else if self.state.active_tab == Tab::Log {
+                        self.draw_log_tab(ui);
+                    } else {
+                        ui.label("このタブは次フェーズで実装します。");
+                    }
+                    self.draw_aux_panel(ui);
                 });
             });
         });
@@ -739,6 +810,63 @@ fn configure_japanese_font(ctx: &egui::Context) {
     }
 
     ctx.set_fonts(fonts);
+}
+
+fn configure_xtranslator_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::dark();
+
+    style.visuals.override_text_color = Some(Color32::from_rgb(212, 218, 224));
+    style.visuals.panel_fill = Color32::from_rgb(20, 22, 26);
+    style.visuals.window_fill = Color32::from_rgb(22, 24, 28);
+    style.visuals.faint_bg_color = Color32::from_rgb(28, 31, 36);
+    style.visuals.extreme_bg_color = Color32::from_rgb(9, 10, 13);
+    style.visuals.window_stroke = egui::Stroke::new(1.0, Color32::from_rgb(58, 63, 71));
+    style.visuals.window_rounding = egui::Rounding::same(3.0);
+    style.visuals.menu_rounding = egui::Rounding::same(2.0);
+
+    style.visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(42, 157, 194, 120);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, XT_ACCENT);
+    style.visuals.hyperlink_color = XT_ACCENT;
+
+    style.visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(24, 26, 31);
+    style.visuals.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(21, 23, 27);
+    style.visuals.widgets.noninteractive.bg_stroke =
+        egui::Stroke::new(1.0, Color32::from_rgb(46, 50, 57));
+    style.visuals.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0, Color32::from_rgb(150, 158, 168));
+
+    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(33, 36, 41);
+    style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(28, 31, 36);
+    style.visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(1.0, Color32::from_rgb(70, 76, 86));
+    style.visuals.widgets.inactive.fg_stroke =
+        egui::Stroke::new(1.0, Color32::from_rgb(196, 203, 211));
+
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(40, 45, 52);
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(36, 41, 47);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, XT_ACCENT);
+    style.visuals.widgets.hovered.fg_stroke =
+        egui::Stroke::new(1.5, Color32::from_rgb(225, 231, 238));
+
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(30, 58, 71);
+    style.visuals.widgets.active.weak_bg_fill = Color32::from_rgb(28, 51, 61);
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, XT_ACCENT);
+    style.visuals.widgets.active.fg_stroke =
+        egui::Stroke::new(1.0, Color32::from_rgb(230, 236, 242));
+
+    style.visuals.widgets.open.bg_fill = Color32::from_rgb(32, 37, 43);
+    style.visuals.widgets.open.weak_bg_fill = Color32::from_rgb(29, 34, 40);
+    style.visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, XT_ACCENT);
+    style.visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(215, 222, 230));
+
+    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+    style.spacing.button_padding = egui::vec2(8.0, 3.0);
+    style.spacing.indent = 16.0;
+    style.spacing.slider_width = 140.0;
+    style.spacing.text_edit_width = 220.0;
+
+    ctx.set_style(style);
 }
 
 fn load_japanese_font_bytes() -> Option<Vec<u8>> {
