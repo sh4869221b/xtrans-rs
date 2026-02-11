@@ -95,6 +95,59 @@ fn e2e_xml_001_apply_from_editor_updates_target() {
 }
 
 #[test]
+fn e2e_xml_002_apply_large_batch_updates_all_targets() {
+    let root = test_temp_dir("xml_apply_large");
+    let input = root.join("bulk_english.strings");
+    let total = 4_000u32;
+
+    let source_entries = (1..=total)
+        .map(|id| StringsEntry {
+            id,
+            text: format!("Source Text {id}"),
+        })
+        .collect::<Vec<_>>();
+    write_strings_file(
+        &input,
+        StringsFile {
+            entries: source_entries,
+        },
+    );
+
+    let mut driver = AppDriver::new();
+    driver
+        .dispatch(AppAction::LoadStrings(input))
+        .expect("load strings");
+
+    let xml_entries = (1..=total)
+        .map(|id| Entry {
+            key: format!("strings:{id}"),
+            source_text: format!("Source Text {id}"),
+            target_text: format!("訳文{id}"),
+        })
+        .collect::<Vec<_>>();
+    let xml = export_entries(&xml_entries);
+
+    driver
+        .dispatch(AppAction::SetXmlText(xml))
+        .expect("set xml text");
+    driver
+        .dispatch(AppAction::ApplyXmlFromEditor)
+        .expect("apply xml from editor");
+
+    let snapshot = driver.snapshot();
+    assert_eq!(snapshot.total_entries, total as usize);
+    assert_eq!(snapshot.translated_entries, total as usize);
+
+    let stats = driver
+        .state()
+        .last_xml_stats
+        .as_ref()
+        .expect("xml stats should be set");
+    assert_eq!(stats.updated, total as usize);
+    assert_eq!(stats.missing, 0);
+}
+
+#[test]
 fn e2e_dict_001_build_and_quick_auto_selection() {
     let root = test_temp_dir("dict_quick");
     let dict_dir = root.join("dict");

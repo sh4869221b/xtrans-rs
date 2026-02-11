@@ -1,12 +1,19 @@
 use std::path::Path;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, FontData, FontDefinitions, FontFamily, Layout, RichText, ScrollArea, TextEdit,
-    TopBottomPanel,
+    self, Align, Align2, FontData, FontDefinitions, FontFamily, Layout, RichText, ScrollArea,
+    TextEdit, TopBottomPanel,
 };
+use xt_core::import_export::{apply_xml_default, import_entries, XmlApplyStats};
+use xt_core::model::Entry;
 
 use crate::actions::{dispatch, AppAction};
 use crate::state::{row_fields, AppState, Tab};
+
+const LARGE_XML_EDITOR_THRESHOLD_BYTES: usize = 256 * 1024;
 
 pub fn launch() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -21,6 +28,20 @@ pub fn launch() -> eframe::Result<()> {
 pub struct XtransApp {
     state: AppState,
     fonts_configured: bool,
+    pending_xml_apply: Option<PendingXmlApply>,
+    show_large_xml_editor: bool,
+}
+
+struct PendingXmlApply {
+    started_at: Instant,
+    source_label: Option<String>,
+    receiver: Receiver<Result<XmlApplyResult, String>>,
+}
+
+struct XmlApplyResult {
+    xml_text: String,
+    merged: Vec<Entry>,
+    stats: XmlApplyStats,
 }
 
 impl XtransApp {
@@ -30,6 +51,127 @@ impl XtransApp {
                 self.state.file_status = err;
             }
         }
+    }
+
+    fn is_blocked(&self) -> bool {
+        self.pending_xml_apply.is_some()
+    }
+
+    fn start_xml_apply(&mut self, contents: String, source_label: Option<String>) {
+        if self.pending_xml_apply.is_some() {
+            self.state.file_status = "XML適用を実行中です".to_string();
+            return;
+        }
+
+        let current_entries = self.state.entries().to_vec();
+        let (tx, rx) = mpsc::channel::<Result<XmlApplyResult, String>>();
+        thread::spawn(move || {
+            let result = import_entries(&contents)
+                .map_err(|err| format!("{err:?}"))
+                .map(|imported| {
+                    let (merged, stats) = apply_xml_default(&current_entries, &imported);
+                    XmlApplyResult {
+                        xml_text: contents,
+                        merged,
+                        stats,
+                    }
+                });
+            let _ = tx.send(result);
+        });
+
+        self.state.xml_error = None;
+        self.state.file_status = "XML一括適用中...".to_string();
+        self.pending_xml_apply = Some(PendingXmlApply {
+            started_at: Instant::now(),
+            source_label,
+            receiver: rx,
+        });
+    }
+
+    fn poll_xml_apply(&mut self) {
+        let Some(pending) = self.pending_xml_apply.as_mut() else {
+            return;
+        };
+
+        match pending.receiver.try_recv() {
+            Ok(result) => {
+                let elapsed = pending.started_at.elapsed();
+                let source_label = pending.source_label.clone();
+                self.pending_xml_apply = None;
+
+                match result {
+                    Ok(done) => {
+                        let xml_len = done.xml_text.len();
+                        let drop_large_xml_text =
+                            source_label.is_some() && xml_len > LARGE_XML_EDITOR_THRESHOLD_BYTES;
+                        if drop_large_xml_text {
+                            self.state.xml_text.clear();
+                        } else {
+                            self.state.xml_text = done.xml_text;
+                        }
+                        if done.stats.updated > 0 {
+                            self.state.history.apply(done.merged.clone());
+                            self.state.set_entries_without_history(done.merged);
+                        }
+                        self.state.last_xml_stats = Some(done.stats.clone());
+                        self.state.xml_error = None;
+                        self.show_large_xml_editor =
+                            !drop_large_xml_text && xml_len <= LARGE_XML_EDITOR_THRESHOLD_BYTES;
+                        let src = source_label.unwrap_or_else(|| "エディタ".to_string());
+                        let mut status = format!(
+                            "XML適用({src}): updated={} unchanged={} missing={} [{:.2}s]",
+                            done.stats.updated,
+                            done.stats.unchanged,
+                            done.stats.missing,
+                            elapsed.as_secs_f32()
+                        );
+                        if drop_large_xml_text {
+                            status.push_str(" [XML本文は保持しません]");
+                        }
+                        self.state.file_status = status;
+                    }
+                    Err(err) => {
+                        self.state.xml_error = Some(err.clone());
+                        self.state.file_status =
+                            format!("XML適用失敗 [{:.2}s]", elapsed.as_secs_f32());
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.pending_xml_apply = None;
+                self.state.xml_error = Some("XML適用ワーカーが異常終了しました".to_string());
+                self.state.file_status = "XML適用失敗".to_string();
+            }
+        }
+    }
+
+    fn draw_busy_overlay(&self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_xml_apply.as_ref() else {
+            return;
+        };
+        let rect = ctx.screen_rect();
+        let layer =
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("xml_apply_backdrop"));
+        let painter = ctx.layer_painter(layer);
+        painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(180));
+
+        egui::Area::new(egui::Id::new("xml_apply_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style()).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add(egui::Spinner::new());
+                        ui.label("XMLを一括適用しています");
+                        ui.label(format!(
+                            "経過: {:.1}s",
+                            pending.started_at.elapsed().as_secs_f32()
+                        ));
+                        ui.label("完了まで操作はできません");
+                    });
+                });
+            });
     }
 
     fn draw_menu(&mut self, ui: &mut egui::Ui) {
@@ -59,7 +201,14 @@ impl XtransApp {
                         .add_filter("XML", &["xml"])
                         .pick_file()
                     {
-                        self.run_action(AppAction::LoadXml(path));
+                        match std::fs::read_to_string(&path) {
+                            Ok(contents) => {
+                                self.start_xml_apply(contents, Some(path.display().to_string()))
+                            }
+                            Err(err) => {
+                                self.state.file_status = format!("read {}: {err}", path.display());
+                            }
+                        }
                     }
                 }
                 if ui.button("翻訳XMLを書き出し").clicked() {
@@ -145,7 +294,11 @@ impl XtransApp {
         });
 
         let counts = self.state.channel_counts();
-        let ratio = self.state.translation_ratio() / 100.0;
+        let ratio = if counts.total == 0 {
+            0.0
+        } else {
+            counts.translated as f32 / counts.total as f32
+        };
         ui.horizontal(|ui| {
             ui.label(format!(
                 "STRINGS [{}/{}]",
@@ -158,25 +311,45 @@ impl XtransApp {
     }
 
     fn draw_entry_list(&mut self, ui: &mut egui::Ui) {
-        let filtered = self.state.filtered_entries();
+        let filtered_len = self.state.filtered_len();
+        let selected_key = self.state.selected_key();
+        let mut next_selection = None;
         ui.heading("Entries");
         ui.separator();
 
-        ScrollArea::vertical().show_rows(ui, 22.0, filtered.len(), |ui, row_range| {
+        ScrollArea::vertical().show_rows(ui, 22.0, filtered_len, |ui, row_range| {
             for row in row_range {
-                let entry = &filtered[row];
-                let selected = self.state.selected_key().as_deref() == Some(entry.key.as_str());
+                let Some(entry) = self.state.filtered_entry(row) else {
+                    continue;
+                };
+                let selected = selected_key.as_deref() == Some(entry.key.as_str());
                 let (edid, record_id, ld) = row_fields(&entry.key, &entry.target_text);
-                let label = format!(
-                    "{} | {} | {} | {} | {}",
-                    edid, record_id, entry.source_text, entry.target_text, ld
-                );
-
-                if ui.selectable_label(selected, label).clicked() {
-                    self.run_action(AppAction::SelectEntry(entry.key.clone()));
-                }
+                ui.horizontal(|ui| {
+                    let source_preview = text_preview(&entry.source_text, 72);
+                    let target_preview = text_preview(&entry.target_text, 72);
+                    let clicked = ui.selectable_label(selected, edid).clicked()
+                        || ui
+                            .add(egui::Label::new(record_id).sense(egui::Sense::click()))
+                            .clicked()
+                        || ui
+                            .add(egui::Label::new(source_preview).sense(egui::Sense::click()))
+                            .clicked()
+                        || ui
+                            .add(egui::Label::new(target_preview).sense(egui::Sense::click()))
+                            .clicked()
+                        || ui
+                            .add(egui::Label::new(ld).sense(egui::Sense::click()))
+                            .clicked();
+                    if clicked {
+                        next_selection = Some(entry.key.clone());
+                    }
+                });
             }
         });
+
+        if let Some(key) = next_selection {
+            self.run_action(AppAction::SelectEntry(key));
+        }
     }
 
     fn draw_tabs(&mut self, ui: &mut egui::Ui) {
@@ -300,20 +473,39 @@ impl XtransApp {
 
         ui.separator();
         ui.label("XML");
-        let mut xml = self.state.xml_text.clone();
-        if ui
-            .add(
-                TextEdit::multiline(&mut xml)
+        let xml_len = self.state.xml_text.len();
+        let suppress_large_editor =
+            xml_len > LARGE_XML_EDITOR_THRESHOLD_BYTES && !self.show_large_xml_editor;
+        if suppress_large_editor {
+            ui.label(format!(
+                "XMLエディタを省略中: {} KB (閾値 {} KB)",
+                xml_len / 1024,
+                LARGE_XML_EDITOR_THRESHOLD_BYTES / 1024
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("XMLエディタを開く（重い）").clicked() {
+                    self.show_large_xml_editor = true;
+                }
+                if ui.button("XMLテキストをクリア").clicked() {
+                    self.state.xml_text.clear();
+                    self.show_large_xml_editor = false;
+                }
+            });
+        } else {
+            ui.add(
+                TextEdit::multiline(&mut self.state.xml_text)
                     .desired_rows(8)
                     .desired_width(f32::INFINITY),
-            )
-            .changed()
-        {
-            self.run_action(AppAction::SetXmlText(xml));
+            );
+            if xml_len > LARGE_XML_EDITOR_THRESHOLD_BYTES {
+                if ui.button("XMLエディタを閉じる（軽量表示へ）").clicked() {
+                    self.show_large_xml_editor = false;
+                }
+            }
         }
         ui.horizontal(|ui| {
             if ui.button("XML適用").clicked() {
-                self.run_action(AppAction::ApplyXmlFromEditor);
+                self.start_xml_apply(self.state.xml_text.clone(), None);
             }
             if ui.button("XML書き出し").clicked() {
                 self.run_action(AppAction::ExportXmlToEditor);
@@ -328,20 +520,31 @@ impl eframe::App for XtransApp {
             configure_japanese_font(ctx);
             self.fonts_configured = true;
         }
+        self.poll_xml_apply();
+        let blocked = self.is_blocked();
+        if blocked {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
 
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::R)) {
+        if !blocked && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::R)) {
             self.run_action(AppAction::QuickAuto);
         }
 
         TopBottomPanel::top("menu_toolbar").show(ctx, |ui| {
-            self.draw_menu(ui);
-            ui.separator();
-            self.draw_toolbar(ui);
+            ui.add_enabled_ui(!blocked, |ui| {
+                self.draw_menu(ui);
+                ui.separator();
+                self.draw_toolbar(ui);
+            });
         });
 
         TopBottomPanel::bottom("status").show(ctx, |ui| {
             let counts = self.state.channel_counts();
-            let ratio = self.state.translation_ratio() / 100.0;
+            let ratio = if counts.total == 0 {
+                0.0
+            } else {
+                counts.translated as f32 / counts.total as f32
+            };
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add(egui::ProgressBar::new(ratio).desired_width(180.0));
                 ui.label(format!(
@@ -354,26 +557,32 @@ impl eframe::App for XtransApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() * 0.42);
-                    self.draw_entry_list(ui);
-                });
-                ui.separator();
-                ui.vertical(|ui| {
-                    self.draw_tabs(ui);
+            ui.add_enabled_ui(!blocked, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() * 0.42);
+                        self.draw_entry_list(ui);
+                    });
                     ui.separator();
-                    if self.state.active_tab == Tab::Home {
-                        self.draw_home_tab(ui);
-                    } else if self.state.active_tab == Tab::Log {
-                        self.draw_log_tab(ui);
-                    } else {
-                        ui.label("このタブは次フェーズで実装します。");
-                    }
-                    self.draw_aux_panel(ui);
+                    ui.vertical(|ui| {
+                        self.draw_tabs(ui);
+                        ui.separator();
+                        if self.state.active_tab == Tab::Home {
+                            self.draw_home_tab(ui);
+                        } else if self.state.active_tab == Tab::Log {
+                            self.draw_log_tab(ui);
+                        } else {
+                            ui.label("このタブは次フェーズで実装します。");
+                        }
+                        self.draw_aux_panel(ui);
+                    });
                 });
             });
         });
+
+        if blocked {
+            self.draw_busy_overlay(ctx);
+        }
     }
 }
 
@@ -429,4 +638,14 @@ fn load_japanese_font_bytes() -> Option<Vec<u8>> {
     }
 
     None
+}
+
+fn text_preview(text: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => &text[..idx],
+        None => text,
+    }
 }

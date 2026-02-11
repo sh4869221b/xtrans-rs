@@ -93,10 +93,9 @@ pub fn dispatch(state: &mut AppState, action: AppAction) -> Result<(), String> {
             let Some(key) = state.selected_key() else {
                 return Ok(());
             };
-            if state
-                .pane
-                .update_entry(&key, &state.edit_source, &state.edit_target)
-            {
+            let source = state.edit_source.clone();
+            let target = state.edit_target.clone();
+            if state.update_entry(&key, &source, &target) {
                 let entries = state.entries().to_vec();
                 state.history.apply(entries);
                 state.file_status = "編集を反映しました".to_string();

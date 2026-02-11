@@ -119,6 +119,10 @@ pub struct AppState {
 
     pub active_tab: Tab,
     pub last_xml_stats: Option<XmlApplyStats>,
+
+    filtered_index_cache: Vec<usize>,
+    filtered_counts_cache: ChannelCounts,
+    filtered_cache_dirty: bool,
 }
 
 impl Default for AppState {
@@ -161,6 +165,9 @@ impl AppState {
             dict_build_summary: None,
             active_tab: Tab::Home,
             last_xml_stats: None,
+            filtered_index_cache: Vec::new(),
+            filtered_counts_cache: ChannelCounts::default(),
+            filtered_cache_dirty: true,
         }
     }
 
@@ -172,8 +179,15 @@ impl AppState {
         self.pane.selected_entry().cloned()
     }
 
-    pub fn filtered_entries(&self) -> Vec<Entry> {
-        self.pane.filtered_entries().to_vec()
+    pub fn filtered_len(&mut self) -> usize {
+        self.ensure_filtered_cache();
+        self.filtered_index_cache.len()
+    }
+
+    pub fn filtered_entry(&mut self, idx: usize) -> Option<&Entry> {
+        self.ensure_filtered_cache();
+        let entry_idx = *self.filtered_index_cache.get(idx)?;
+        self.pane.entries().get(entry_idx)
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -182,6 +196,7 @@ impl AppState {
 
     pub fn set_query(&mut self, query: &str) {
         self.pane.set_query(query);
+        self.invalidate_filtered_cache();
     }
 
     pub fn select(&mut self, key: &str) {
@@ -195,29 +210,42 @@ impl AppState {
     pub fn set_entries_with_history(&mut self, entries: Vec<Entry>) {
         self.history.apply(entries.clone());
         self.pane.set_entries(entries);
+        self.invalidate_filtered_cache();
     }
 
     pub fn set_entries_without_history(&mut self, entries: Vec<Entry>) {
         self.pane.set_entries(entries);
+        self.invalidate_filtered_cache();
+    }
+
+    pub fn update_entry(&mut self, key: &str, source: &str, target: &str) -> bool {
+        let updated = self.pane.update_entry(key, source, target);
+        if updated {
+            self.invalidate_filtered_cache();
+        }
+        updated
     }
 
     pub fn undo(&mut self) {
         if self.history.undo() {
             self.pane.set_entries(self.history.present().clone());
+            self.invalidate_filtered_cache();
         }
     }
 
     pub fn redo(&mut self) {
         if self.history.redo() {
             self.pane.set_entries(self.history.present().clone());
+            self.invalidate_filtered_cache();
         }
     }
 
-    pub fn channel_counts(&self) -> ChannelCounts {
-        count_channels(&self.pane.filtered_entries())
+    pub fn channel_counts(&mut self) -> ChannelCounts {
+        self.ensure_filtered_cache();
+        self.filtered_counts_cache.clone()
     }
 
-    pub fn translation_ratio(&self) -> f32 {
+    pub fn translation_ratio(&mut self) -> f32 {
         let counts = self.channel_counts();
         if counts.total == 0 {
             0.0
@@ -257,36 +285,61 @@ impl AppState {
             file_pairs,
         });
     }
-}
 
-pub fn row_fields(key: &str, target_text: &str) -> (String, String, String) {
-    let edid = key.split(':').next_back().unwrap_or(key).to_string();
-    let record_id = if key.to_ascii_lowercase().contains("plugin") {
-        "REC FULL".to_string()
-    } else {
-        "WEAP FULL".to_string()
-    };
-    let ld = if target_text.is_empty() { "-" } else { "T" }.to_string();
-    (edid, record_id, ld)
-}
-
-fn count_channels(entries: &[Entry]) -> ChannelCounts {
-    let mut c = ChannelCounts::default();
-    for entry in entries {
-        c.total += 1;
-        if !entry.target_text.is_empty() {
-            c.translated += 1;
-        }
-        let key = entry.key.to_ascii_lowercase();
-        if key.contains("dlstrings") {
-            c.dlstrings += 1;
-        } else if key.contains("ilstrings") {
-            c.ilstrings += 1;
-        } else {
-            c.strings += 1;
-        }
+    fn invalidate_filtered_cache(&mut self) {
+        self.filtered_cache_dirty = true;
     }
-    c
+
+    fn ensure_filtered_cache(&mut self) {
+        if !self.filtered_cache_dirty {
+            return;
+        }
+        let query = self.pane.query().to_string();
+        let entries = self.pane.entries();
+
+        let mut indices = Vec::with_capacity(entries.len());
+        let mut counts = ChannelCounts::default();
+        for (idx, entry) in entries.iter().enumerate() {
+            if query.is_empty()
+                || entry.source_text.contains(&query)
+                || entry.target_text.contains(&query)
+            {
+                indices.push(idx);
+                counts.total += 1;
+                if !entry.target_text.is_empty() {
+                    counts.translated += 1;
+                }
+                let key = entry.key.to_ascii_lowercase();
+                if key.contains("dlstrings") {
+                    counts.dlstrings += 1;
+                } else if key.contains("ilstrings") {
+                    counts.ilstrings += 1;
+                } else {
+                    counts.strings += 1;
+                }
+            }
+        }
+
+        self.filtered_index_cache = indices;
+        self.filtered_counts_cache = counts;
+        self.filtered_cache_dirty = false;
+    }
+}
+
+pub fn row_fields<'a>(key: &'a str, target_text: &str) -> (&'a str, &'static str, &'static str) {
+    let edid = key.split(':').next_back().unwrap_or(key);
+    let record_id = if key
+        .split(':')
+        .next()
+        .map(|prefix| prefix.eq_ignore_ascii_case("plugin"))
+        .unwrap_or(false)
+    {
+        "REC FULL"
+    } else {
+        "WEAP FULL"
+    };
+    let ld = if target_text.is_empty() { "-" } else { "T" };
+    (edid, record_id, ld)
 }
 
 fn now_unix_seconds() -> u64 {
@@ -294,4 +347,88 @@ fn now_unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xt_core::model::Entry;
+
+    #[test]
+    fn t_perf_001_list_hot_path_baseline() {
+        let mut state = AppState::new();
+        let entries = (0..100_000)
+            .map(|i| Entry {
+                key: format!("plugin:{i:08x}"),
+                source_text: format!("Source text {i} lorem ipsum dolor sit amet"),
+                target_text: if i % 5 == 0 {
+                    format!("訳文 {i}")
+                } else {
+                    String::new()
+                },
+            })
+            .collect::<Vec<_>>();
+        state.set_entries_with_history(entries);
+        state.set_query("");
+
+        let start = std::time::Instant::now();
+        let mut checksum = 0usize;
+        for frame in 0..120usize {
+            let len = state.filtered_len();
+            for row in 0..80usize {
+                let idx = (frame + row) % len;
+                let entry = state.filtered_entry(idx).expect("entry");
+                checksum ^= entry.key.len();
+            }
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "t_perf_001_list_hot_path_baseline: {:?}, checksum={}",
+            elapsed, checksum
+        );
+    }
+
+    #[test]
+    fn t_perf_002_row_render_compare_concat_vs_cells() {
+        let entries = (0..80_000usize)
+            .map(|i| Entry {
+                key: format!("plugin:{i:08x}"),
+                source_text: format!("Source text {i} lorem ipsum dolor sit amet"),
+                target_text: if i % 3 == 0 {
+                    format!("訳文 {i}")
+                } else {
+                    String::new()
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let mut concat_checksum = 0usize;
+        let concat_start = std::time::Instant::now();
+        for entry in &entries {
+            let (edid, record_id, ld) = row_fields(&entry.key, &entry.target_text);
+            let row = format!(
+                "{} | {} | {} | {} | {}",
+                edid, record_id, entry.source_text, entry.target_text, ld
+            );
+            concat_checksum ^= std::hint::black_box(row.len());
+        }
+        let concat_elapsed = concat_start.elapsed();
+
+        let mut cells_checksum = 0usize;
+        let cells_start = std::time::Instant::now();
+        for entry in &entries {
+            let (edid, record_id, ld) = row_fields(&entry.key, &entry.target_text);
+            cells_checksum ^= std::hint::black_box(edid.len());
+            cells_checksum ^= std::hint::black_box(record_id.len());
+            cells_checksum ^= std::hint::black_box(entry.source_text.len());
+            cells_checksum ^= std::hint::black_box(entry.target_text.len());
+            cells_checksum ^= std::hint::black_box(ld.len());
+        }
+        let cells_elapsed = cells_start.elapsed();
+
+        println!(
+            "t_perf_002_row_render_compare_concat_vs_cells: concat={:?} cells={:?} checksum={} {}",
+            concat_elapsed, cells_elapsed, concat_checksum, cells_checksum
+        );
+    }
 }
