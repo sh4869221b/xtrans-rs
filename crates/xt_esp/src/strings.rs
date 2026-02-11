@@ -26,9 +26,7 @@ pub fn read_strings(input: &[u8]) -> Result<StringsFile, StringsError> {
     }
     let count = read_u32(input, 0)?;
     let data_size = read_u32(input, 4)? as usize;
-    let directory_size = count
-        .checked_mul(8)
-        .ok_or(StringsError::InvalidHeader)? as usize;
+    let directory_size = count.checked_mul(8).ok_or(StringsError::InvalidHeader)? as usize;
     let data_start = 8usize
         .checked_add(directory_size)
         .ok_or(StringsError::InvalidHeader)?;
@@ -127,9 +125,7 @@ fn read_length_prefixed_strings(input: &[u8]) -> Result<StringsFile, StringsErro
     }
     let count = read_u32(input, 0)?;
     let data_size = read_u32(input, 4)? as usize;
-    let directory_size = count
-        .checked_mul(8)
-        .ok_or(StringsError::InvalidHeader)? as usize;
+    let directory_size = count.checked_mul(8).ok_or(StringsError::InvalidHeader)? as usize;
     let data_start = 8usize
         .checked_add(directory_size)
         .ok_or(StringsError::InvalidHeader)?;

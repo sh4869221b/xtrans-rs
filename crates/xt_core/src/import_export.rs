@@ -173,10 +173,7 @@ fn parse_element_text(input: &str, name: &'static str) -> Result<String, XmlErro
             from = start + 1;
             continue;
         }
-        let open_end = input[start..]
-            .find('>')
-            .ok_or(XmlError::InvalidFormat)?
-            + start;
+        let open_end = input[start..].find('>').ok_or(XmlError::InvalidFormat)? + start;
         let close_tag = format!("</{name}>");
         let close_start = input[open_end + 1..]
             .find(&close_tag)
@@ -194,7 +191,10 @@ fn find_string_tag(input: &str) -> Option<usize> {
         let start = from + rel_start;
         let tail = &input[start + "<String".len()..];
         let next = tail.as_bytes().first().copied();
-        if matches!(next, Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n')) {
+        if matches!(
+            next,
+            Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n')
+        ) {
             return Some(start);
         }
         from = start + 1;

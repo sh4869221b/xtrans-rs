@@ -29,7 +29,8 @@ impl ValidationIssue {
             entry_key: entry_key.to_string(),
             severity: Severity::Error,
             rule_id: "placeholder.printf.mismatch".to_string(),
-            message: "Printf-style placeholders do not match between source and target.".to_string(),
+            message: "Printf-style placeholders do not match between source and target."
+                .to_string(),
         }
     }
 
@@ -189,11 +190,8 @@ mod tests {
 
     #[test]
     fn t_val_alias_001_mismatch_returns_error() {
-        let issues = validate_alias_tags(
-            "entry:5",
-            "Hello <Alias=John>",
-            "こんにちは <Alias=Jane>",
-        );
+        let issues =
+            validate_alias_tags("entry:5", "Hello <Alias=John>", "こんにちは <Alias=Jane>");
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].severity, Severity::Error);
     }

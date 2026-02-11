@@ -199,8 +199,7 @@ pub fn apply_translations(
         }
     }
 
-    let output_path = output_dir
-        .join(input_path.file_name().ok_or(EspError::InvalidStringsPath)?);
+    let output_path = output_dir.join(input_path.file_name().ok_or(EspError::InvalidStringsPath)?);
     let output_bytes = serialize_blocks(&blocks)?;
     std::fs::create_dir_all(output_dir)?;
     std::fs::write(&output_path, output_bytes)?;
@@ -208,11 +207,7 @@ pub fn apply_translations(
     Ok(output_path)
 }
 
-fn collect_strings(
-    record: &Record,
-    strings_map: &StringsMap,
-    results: &mut Vec<ExtractedString>,
-) {
+fn collect_strings(record: &Record, strings_map: &StringsMap, results: &mut Vec<ExtractedString>) {
     let mut index = 0usize;
     for subrecord in &record.subrecords {
         if !is_string_subrecord(&subrecord.sub_type) {
@@ -625,13 +620,14 @@ fn resolve_strings_path(
 ) -> Option<PathBuf> {
     let file_name = format!("{base_name}_{language}.{}", kind.extension());
     let candidate = strings_dir.join(&file_name);
-    if candidate.exists() { Some(candidate) } else { None }
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
-fn load_strings_file(
-    path: Option<&Path>,
-    kind: StringsKind,
-) -> EspResult<Option<StringsFile>> {
+fn load_strings_file(path: Option<&Path>, kind: StringsKind) -> EspResult<Option<StringsFile>> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -857,9 +853,14 @@ mod tests {
         let mut updated = extracted[0].clone();
         updated.text = "Hi".to_string();
         let out_dir = temp_dir("inline-out");
-        let out_path =
-            apply_translations(&path, &workspace_root, &out_dir, vec![updated], Some("english"))
-                .expect("apply");
+        let out_path = apply_translations(
+            &path,
+            &workspace_root,
+            &out_dir,
+            vec![updated],
+            Some("english"),
+        )
+        .expect("apply");
         let refreshed =
             extract_strings(&out_path, &workspace_root, Some("english")).expect("extract updated");
         assert_eq!(refreshed[0].text, "Hi");
@@ -898,8 +899,8 @@ mod tests {
             &strings_file,
         );
 
-        let extracted =
-            extract_strings(&plugin_path, &workspace_root, Some(language)).expect("extract localized");
+        let extracted = extract_strings(&plugin_path, &workspace_root, Some(language))
+            .expect("extract localized");
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].text, "Hello");
         match extracted[0].storage {
@@ -948,9 +949,14 @@ mod tests {
         let mut updated = extracted[0].clone();
         updated.text = "Updated".to_string();
         let out_dir = temp_dir("compressed-out");
-        let out_path =
-            apply_translations(&path, &workspace_root, &out_dir, vec![updated], Some("english"))
-                .expect("apply");
+        let out_path = apply_translations(
+            &path,
+            &workspace_root,
+            &out_dir,
+            vec![updated],
+            Some("english"),
+        )
+        .expect("apply");
         let refreshed =
             extract_strings(&out_path, &workspace_root, Some("english")).expect("extract updated");
         assert_eq!(refreshed[0].text, "Updated");

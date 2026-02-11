@@ -261,10 +261,7 @@ mod tests {
 
     #[test]
     fn t_dict_002_build_from_strings_dir() {
-        let dir = std::env::temp_dir().join(format!(
-            "xt_dict_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("xt_dict_test_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create");
         let en = StringsFile {
@@ -289,12 +286,9 @@ mod tests {
             write_strings(&ja).expect("write ja"),
         )
         .expect("save ja");
-        let (dict, stats) = TranslationDictionary::build_from_strings_dir(
-            &dir,
-            "english",
-            "japanese",
-        )
-        .expect("build");
+        let (dict, stats) =
+            TranslationDictionary::build_from_strings_dir(&dir, "english", "japanese")
+                .expect("build");
         assert_eq!(stats.entries_added, 1);
         assert_eq!(stats.file_pairs, 1);
         assert_eq!(dict.len(), 1);
