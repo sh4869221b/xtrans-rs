@@ -5,8 +5,14 @@ edition = "2021"
 license.workspace = true
 default-run = "xt_app"
 
+[features]
+default = []
+hotpatch = ["dep:subsecond", "dep:dioxus-devtools"]
+
 [dependencies]
 eframe = "0.28.1"
 egui = "0.28.1"
 rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "async-std"] }
 xt_core = { path = "../xt_core" }
+subsecond = { version = "0.7.3", optional = true }
+dioxus-devtools = { version = "0.7.3", optional = true }

@@ -24,6 +24,7 @@ const ENTRY_COL_LD_WIDTH: f32 = 26.0;
 const XT_ACCENT: Color32 = Color32::from_rgb(42, 157, 194);
 
 pub fn launch() -> eframe::Result<()> {
+    crate::hotpatch::init_hotpatch();
     let options = eframe::NativeOptions::default();
     eframe::run_native(
         "xtrans-rs",
@@ -711,10 +712,8 @@ impl XtransApp {
             }
         });
     }
-}
 
-impl eframe::App for XtransApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update_inner(&mut self, ctx: &egui::Context) {
         if !self.fonts_configured {
             configure_japanese_font(ctx);
             self.fonts_configured = true;
@@ -788,6 +787,19 @@ impl eframe::App for XtransApp {
 
         if blocked {
             self.draw_busy_overlay(ctx);
+        }
+    }
+}
+
+impl eframe::App for XtransApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(all(debug_assertions, feature = "hotpatch"))]
+        {
+            subsecond::call(|| self.update_inner(ctx));
+        }
+        #[cfg(not(all(debug_assertions, feature = "hotpatch")))]
+        {
+            self.update_inner(ctx);
         }
     }
 }

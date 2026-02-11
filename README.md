@@ -53,7 +53,47 @@ just test-esp
 just test-app
 just build-app
 just serve
+just dev
 ```
+
+### Live Reload (Development)
+
+`xt_app` supports two development loops:
+
+1. Hotpatch (best effort, no restart for some edits)
+2. Auto restart fallback (rebuild + relaunch)
+
+Install tools:
+
+```bash
+cargo install dioxus-cli cargo-watch
+```
+
+Run default development mode:
+
+```bash
+just dev
+```
+
+Use hotpatch explicitly:
+
+```bash
+just dev-hotpatch
+```
+
+Use auto-restart explicitly:
+
+```bash
+just dev-restart
+```
+
+Notes for hotpatch mode (`subsecond`):
+
+- Detection is subsecond-class (<1s), but rebuild/apply latency depends on Rust compile time.
+- Only the tip crate is reliably patched. In this workspace, edits under `crates/xt_app` are the primary target.
+- Edits in `crates/xt_core` / `crates/xt_esp` should be treated as restart-required changes.
+- Structural changes (for example struct layout, some thread-local heavy paths) may require restart.
+- If hotpatch is unstable, switch to `just dev-restart`.
 
 ### Run Desktop App
 

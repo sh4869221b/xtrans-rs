@@ -47,5 +47,14 @@ clippy:
 serve:
 	cargo run -p xt_app --bin xt_app
 
+dev:
+	@if command -v dx >/dev/null 2>&1; then echo "dev: hotpatch mode"; dx serve --hotpatch --package xt_app --bin xt_app --features hotpatch; else echo "dev: dx not found, fallback to auto-restart mode"; just dev-restart; fi
+
+dev-hotpatch:
+	@if ! command -v dx >/dev/null 2>&1; then echo "dx is required. Install with: cargo install dioxus-cli"; exit 1; fi; dx serve --hotpatch --package xt_app --bin xt_app --features hotpatch
+
+dev-restart:
+	@if ! command -v cargo-watch >/dev/null 2>&1; then echo "cargo-watch is required. Install with: cargo install cargo-watch"; exit 1; fi; cargo watch --clear -w crates/xt_app/src -w crates/xt_core/src -w crates/xt_esp/src -x "run -p xt_app --bin xt_app"
+
 clean:
 	cargo clean
